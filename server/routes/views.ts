@@ -1,4 +1,4 @@
-import type { PendingReviewRef, ReviewEntity, RulePack, RulePackView, Run, Skill, SkillConfig, SkillView, Workflow, WorkflowDef, WorkflowView } from '../../shared/types';
+import type { PendingReviewRef, ReviewEntity, RulePack, RulePackView, Run, RunEvent, Skill, SkillConfig, SkillView, Workflow, WorkflowDef, WorkflowView } from '../../shared/types';
 import { rulePackStatus } from '../core/workflow/engine';
 import { validateWorkflowDef } from '../core/workflow/dag';
 import { sourceStats } from '../core/rulePacks';
@@ -97,8 +97,18 @@ export function runForViewer(run: Run, internals: boolean): Run {
     Object.entries(run.nodes).map(([id, n]) => {
       // eslint-disable-next-line @typescript-eslint/no-unused-vars
       const { prompt, rawOutput, ...rest } = n;
-      return [id, rest];
+      // the model's reasoning may restate the task instructions: an authoring internal like the prompt
+      return [id, { ...rest, transcript: rest.transcript?.filter((e) => e.type !== 'thinking') }];
     }),
   );
-  return { ...run, nodes };
+  return { ...run, nodes, log: run.log?.filter((e) => e.kind !== 'thinking') };
+}
+
+/** Whether a live run event may be sent to a viewer (reasoning only to roles that see run internals). */
+export function eventForViewer(e: RunEvent, internals: boolean): boolean {
+  if (internals) return true;
+  if (e.type === 'thinking_delta') return false;
+  if (e.type === 'transcript' && e.entry.type === 'thinking') return false;
+  if (e.type === 'log' && e.entry.kind === 'thinking') return false;
+  return true;
 }

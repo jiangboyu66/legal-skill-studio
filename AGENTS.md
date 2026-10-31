@@ -24,6 +24,9 @@ Legal Skill Studio：让法务团队自建 AI Skill，组合成 DAG 工作流并
 - 运行状态的展示统一用 `useRunLive`（`src/components/runLive.ts`）：推送事件只在本地追加日志与过程记录，状态变化一律重新加载；刷新失败只提示、不清空已显示的内容；已结束的运行不能被旧响应改回“运行中”。
 - 引擎每新增一类步骤，都通过 `WorkflowEngine.log()` 写一条中文“运行过程”记录（会实时推送并随运行保存）。
 - 会话按标签页：网页请求带 `x-session-mode: tab` 与 `Authorization: Bearer`（`src/api.ts`）；下载与打开原件用 `download()` / `openFile()`，不要写直接指向 `/api/` 的链接（会带上别的标签页的 Cookie）。
+- **停止**靠一路传下去的 `AbortSignal`：引擎（每个运行一个 `AbortController`）→ `executeSkill` → `QueryEngine` → 模型请求（`postJson` / `postStream`）与核验代理；被停止时抛 `RUN_CANCELED`，不得重试。新增长时间步骤要检查 `signal.aborted`。
+- **深度思考**只是“是否记录和打印思考”：`run.options.showThinking` 仅对有 `run.view_internals` 的角色生效；思考内容经 `runForViewer` / `eventForViewer` 对其他角色过滤。新增返回运行或推送事件的接口必须走这两个函数。
+- 界面按钮里的图标用 `src/components/Icon.tsx`（SVG），不要用 emoji（各系统显示不一致）。
 - 对话追问等新的模型调用路径要走 `executeSkill`（见 `server/core/chat.ts` 的 `QA_SKILL` + `RESULT_QA` 代理），复用守卫。
 - 输入框：说明写在框下方的 `field-help`，placeholder 只放简短示例（≤ 24 字，见 `shared/hints.ts`）；多行文本用 `AutoTextarea`；不要用 `window.prompt`。
 - 测试账号的密码在 `server/seed/index.ts` 的 `DEMO_USERS` 中，每个角色一个；改动时同步 README 的账号表。

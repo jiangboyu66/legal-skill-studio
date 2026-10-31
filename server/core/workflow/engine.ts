@@ -14,6 +14,7 @@ import type {
   Run,
   RunEvent,
   RunLogEntry,
+  RunOptions,
   RunStatus,
   RunWarning,
   SkillConfig,
@@ -34,7 +35,8 @@ import { evaluate } from './expr';
 
 const now = () => new Date().toISOString();
 const FINISHED_NODE: NodeStatus[] = ['succeeded', 'skipped', 'rejected'];
-const TERMINAL_RUN: RunStatus[] = ['succeeded', 'failed', 'rejected'];
+const TERMINAL_RUN: RunStatus[] = ['succeeded', 'failed', 'rejected', 'canceled'];
+const STOPPED = '运行已停止';
 
 export function rulePackStatus(rp: RulePack): RulePack['status'] {
   if (rp.approval && new Date(rp.approval.reviewDueAt).getTime() < Date.now()) return 'expired';
@@ -68,12 +70,16 @@ export class WorkflowEngine {
   private pending = new Set<Promise<void>>();
   private docCache = new Map<string, MaterialDocument>();
   private saveTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  /** Aborts in-flight model requests of a run when it is stopped. */
+  private controllers = new Map<string, AbortController>();
+  /** Live reasoning text waiting to be streamed (batched so viewers get a few updates per second). */
+  private thinkingBuf = new Map<string, { runId: string; nodeId: string; key: string; agent?: string; text: string; timer?: ReturnType<typeof setTimeout> }>();
 
   constructor(private rt: Runtime, private docs: DocumentService) {}
 
   // ───────────── public API ─────────────
 
-  async start(p: { org: Org; user: User; workflow: Workflow; mode: 'production' | 'test'; inputs: Record<string, unknown>; fault?: FaultInjection; rerunOf?: string }): Promise<Run> {
+  async start(p: { org: Org; user: User; workflow: Workflow; mode: 'production' | 'test'; inputs: Record<string, unknown>; fault?: FaultInjection; rerunOf?: string; options?: RunOptions }): Promise<Run> {
     const { org, user, workflow: wf, mode } = p;
     requirePermission(user, org, mode === 'production' ? 'workflow.run' : 'workflow.test');
     const def = mode === 'production' ? wf.published : wf.draft;
@@ -206,6 +212,7 @@ export class WorkflowEngine {
       grantedTools: [],
       usage: {},
       rerunOf: p.rerunOf,
+      options: p.options?.showThinking ? { showThinking: true } : undefined,
       createdAt: now(),
     };
     if (p.fault && p.fault.type !== 'none' && mode !== 'test') warnings.push({ code: 'FAULT_IGNORED', message: '故障注入仅在测试运行中生效，已忽略。' });
@@ -306,7 +313,8 @@ export class WorkflowEngine {
   async retry(p: { org: Org; user: User; runId: string }): Promise<Run> {
     const { org, user } = p;
     const prev = this.get(org.id, p.runId);
-    if (prev.status !== 'failed') throw Errors.conflict('只有失败的运行可以从失败节点重试。', '已完成或被驳回的运行请使用“重新运行”（按当前配置全部重跑）。');
+    if (prev.status !== 'failed' && prev.status !== 'canceled') throw Errors.conflict('只有失败或已停止的运行可以从中断处继续。', '已完成或被驳回的运行请使用“重新运行”（按当前配置全部重跑）。');
+    const resumeText = prev.status === 'canceled' ? `从停止处继续（原运行 ${prev.id}）` : `从失败节点重试（原运行 ${prev.id}）`;
     requirePermission(user, org, prev.mode === 'production' ? 'workflow.run' : 'workflow.test');
     if (prev.mode === 'production' && org.policy.requireApprovedRulePacks) {
       const expired = prev.rulePacks.find((rp) => rp.approval && new Date(rp.approval.reviewDueAt).getTime() < Date.now());
@@ -330,6 +338,7 @@ export class WorkflowEngine {
       error: undefined,
       rerunOf: undefined,
       retryOf: prev.id,
+      canceled: undefined,
       log: [],
       createdAt: now(),
       startedAt: undefined,
@@ -337,7 +346,7 @@ export class WorkflowEngine {
       warnings: [
         {
           code: 'RETRY',
-          message: `从失败节点重试（原运行 ${prev.id}）：沿用原运行的工作流、Skill 与规则包版本，复用 ${reused.length} 个已成功节点的结果${prev.faultInjection ? '；不再注入故障' : ''}。`,
+          message: `${resumeText}：沿用原运行的工作流、Skill 与规则包版本，复用 ${reused.length} 个已成功节点的结果${prev.faultInjection ? '；不再注入故障' : ''}。`,
         },
         ...prev.warnings.filter((w) => !dropped.has(w.code)),
       ],
@@ -353,7 +362,7 @@ export class WorkflowEngine {
       };
     }
     this.rt.audit(org.id, user, 'run.retry', 'run', run.id, { retryOf: prev.id, reused: reused.map((n) => n.nodeId) });
-    this.log(run, { kind: 'run', status: 'queued', text: `从失败节点重试（原运行 ${prev.id}）：沿用原运行的版本与输入${prev.faultInjection ? '，不再注入故障' : ''}` });
+    this.log(run, { kind: 'run', status: 'queued', text: `${resumeText}：沿用原运行的版本与输入${prev.faultInjection ? '，不再注入故障' : ''}` });
     for (const n of reused) this.log(run, { kind: 'node', nodeId: n.nodeId, status: 'succeeded', text: `节点「${n.name}」复用原运行的结果` });
     this.live.set(run.id, run);
     this.save(run);
@@ -361,9 +370,34 @@ export class WorkflowEngine {
     return run;
   }
 
+  /**
+   * Stops a run: in-flight model requests are aborted, nodes that have not finished are skipped
+   * ("运行已停止"), finished node results are kept (so "从停止处继续" can reuse them).
+   */
+  async cancel(p: { org: Org; user: User; runId: string }): Promise<Run> {
+    const run = this.load(p.org.id, p.runId);
+    if (TERMINAL_RUN.includes(run.status)) throw Errors.conflict('运行已经结束，不需要停止。');
+    if (run.startedBy !== p.user.id && p.user.role !== 'admin') throw Errors.forbidden('停止他人发起的运行', '只有运行的发起人或管理员可以停止运行。');
+    if (run.canceled) return run;
+    run.canceled = { byUserId: p.user.id, byName: p.user.name, at: now() };
+    const busy = (this.running.get(run.id) ?? 0) > 0;
+    this.rt.audit(p.org.id, p.user, 'run.cancel', 'run', run.id, { status: run.status });
+    this.log(run, { kind: 'run', text: `${p.user.name} 停止了运行${busy ? '，正在中断执行中的节点' : ''}` });
+    this.controllers.get(run.id)?.abort();
+    if (!busy) await this.finish(run, 'canceled');
+    else this.save(run);
+    return run;
+  }
+
   /** Re-attach runs left unfinished by a previous process; interrupted nodes are re-executed. */
   resumeAll() {
     for (const run of this.rt.db.runsByStatus(['queued', 'running'])) {
+      if (run.canceled) {
+        // stopped by hand just before the restart
+        this.live.set(run.id, run);
+        this.track(this.finish(run, 'canceled'));
+        continue;
+      }
       for (const nr of Object.values(run.nodes)) if (nr.status === 'running') nr.status = 'pending';
       run.warnings.push({ code: 'RESUMED', message: '服务重启后已自动恢复执行（中断的节点已重新运行）。' });
       this.log(run, { kind: 'note', text: '服务重启后自动恢复执行，中断的节点将重新运行' });
@@ -435,6 +469,45 @@ export class WorkflowEngine {
     this.rt.events.publish(e);
   }
 
+  private signalFor(run: Run): AbortSignal {
+    let c = this.controllers.get(run.id);
+    if (!c) {
+      c = new AbortController();
+      this.controllers.set(run.id, c);
+    }
+    return c.signal;
+  }
+
+  /** Buffers streamed reasoning and publishes it a few times per second. */
+  private thinkingDelta(run: Run, nodeId: string, key: string, text: string, agent?: string) {
+    const id = `${run.id}|${nodeId}|${key}`;
+    let b = this.thinkingBuf.get(id);
+    if (!b) {
+      b = { runId: run.id, nodeId, key, agent, text: '' };
+      this.thinkingBuf.set(id, b);
+    }
+    b.text += text;
+    if (!b.timer) {
+      const buf = b;
+      buf.timer = setTimeout(() => {
+        buf.timer = undefined;
+        if (!buf.text) return;
+        this.emit({ type: 'thinking_delta', runId: buf.runId, nodeId: buf.nodeId, key: buf.key, text: buf.text, ...(buf.agent ? { agent: buf.agent } : {}) });
+        buf.text = '';
+      }, 150);
+      buf.timer.unref?.();
+    }
+  }
+
+  /** The complete reasoning of a call has been recorded: pending live text for that node is obsolete. */
+  private dropThinking(runId: string, nodeId?: string) {
+    for (const [id, b] of this.thinkingBuf) {
+      if (b.runId !== runId || (nodeId && b.nodeId !== nodeId)) continue;
+      if (b.timer) clearTimeout(b.timer);
+      this.thinkingBuf.delete(id);
+    }
+  }
+
   /** Appends a line to the run's activity log and streams it to viewers. */
   private log(run: Run, e: Omit<RunLogEntry, 'seq' | 'at'>) {
     const entry: RunLogEntry = { seq: (run.log?.length ?? 0) + 1, at: now(), ...e };
@@ -479,6 +552,10 @@ export class WorkflowEngine {
   private async schedule(runId: string): Promise<void> {
     const run = this.live.get(runId);
     if (!run || TERMINAL_RUN.includes(run.status)) return;
+    if (run.canceled) {
+      if ((this.running.get(runId) ?? 0) === 0) await this.finish(run, 'canceled');
+      return;
+    }
     if (run.status === 'queued') {
       run.status = 'running';
       run.startedAt = now();
@@ -549,6 +626,12 @@ export class WorkflowEngine {
         this.setNode(run, nr, 'running');
         const job = this.runSkillNode(run, n)
           .catch((err) => {
+            if (run.canceled) {
+              nr.skipReason = STOPPED;
+              nr.finishedAt = now();
+              this.setNode(run, nr, 'skipped');
+              return;
+            }
             nr.error = toErrorInfo(err);
             run.error = { code: nr.error.code, message: `节点「${n.name}」失败：${nr.error.message}`, hint: nr.error.hint };
             this.setNode(run, nr, 'failed');
@@ -654,11 +737,15 @@ export class WorkflowEngine {
       onTranscript: (entry) => {
         // Kept on the live node so a reload mid-run shows the progress so far.
         (nr.transcript ??= []).push(entry);
+        if (entry.type === 'thinking') this.dropThinking(run.id, n.id);
         this.emit({ type: 'transcript', runId: run.id, nodeId: n.id, entry });
         const line = transcriptLine(entry);
         if (line) this.log(run, { ...line, nodeId: n.id });
         this.saveSoon(run);
       },
+      showThinking: !!run.options?.showThinking,
+      onThinkingDelta: (key, text, agent) => this.thinkingDelta(run, n.id, key, text, agent),
+      signal: this.signalFor(run),
       onModelCall: (turn) => {
         this.log(run, { kind: 'model', nodeId: n.id, text: `「${n.name}」第 ${turn} 轮：等待模型回复（${this.rt.provider.info.model}）` });
         this.saveSoon(run);
@@ -692,6 +779,13 @@ export class WorkflowEngine {
       await this.rt.hooks.run('ApprovalRequested', { run, nodeId: n.id });
       return;
     }
+    this.dropThinking(run.id, n.id);
+    if (!exec.ok && run.canceled) {
+      // interrupted by "停止": not a failure of the node
+      nr.skipReason = STOPPED;
+      this.setNode(run, nr, 'skipped');
+      return;
+    }
     if (!exec.ok) {
       nr.error = exec.error;
       run.error = { code: exec.error?.code ?? 'NODE_FAILED', message: `节点「${n.name}」失败：${exec.error?.message ?? ''}`, hint: exec.error?.hint };
@@ -707,7 +801,7 @@ export class WorkflowEngine {
     run.finishedAt = now();
     for (const n of Object.values(run.nodes)) {
       if (n.status === 'pending' || n.status === 'waiting_approval') {
-        Object.assign(n, { status: 'skipped', skipReason: n.skipReason ?? (status === 'failed' ? '运行已失败' : '运行已结束'), approvalRequest: undefined });
+        Object.assign(n, { status: 'skipped', skipReason: n.skipReason ?? (status === 'failed' ? '运行已失败' : status === 'canceled' ? STOPPED : '运行已结束'), approvalRequest: undefined });
         this.log(run, this.nodeLine(run, n, 'skipped'));
       }
     }
@@ -722,9 +816,11 @@ export class WorkflowEngine {
         if (designated && designated !== outId) run.warnings.push({ code: 'OUTPUT_FALLBACK', message: `指定的最终输出节点未执行，已改用「${run.nodes[outId].name}」的结果。` });
       }
     }
-    this.log(run, { kind: status === 'succeeded' ? 'run' : 'error', status, text: runEndLine(run) });
+    this.log(run, { kind: status === 'succeeded' || status === 'canceled' ? 'run' : 'error', status, text: runEndLine(run) });
     this.save(run);
     this.live.delete(run.id);
+    this.controllers.delete(run.id);
+    this.dropThinking(run.id);
     this.emit({ type: 'run_status', runId: run.id, status });
     await this.rt.hooks.run('RunEnd', { run });
   }

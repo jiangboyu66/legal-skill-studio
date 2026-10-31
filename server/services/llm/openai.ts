@@ -1,6 +1,6 @@
 import type { AppConfig } from '../../config';
 import { AppError } from '../../errors';
-import { postJson } from './http';
+import { postJson, postStream } from './http';
 import { type Block, type ChatMessage, type CompletionRequest, type CompletionResult, type LLMProvider, textOf } from './types';
 
 type OAMessage = Record<string, unknown>;
@@ -15,10 +15,22 @@ export type OpenAICompatibleOptions = AppConfig['openai'] & {
   keyEnvName?: string;
   /** Extra top-level request fields, e.g. DeepSeek `thinking` / `reasoning_effort`. Dropped if the endpoint rejects them. */
   extraBody?: Record<string, unknown>;
+  /** Whether the model returns its reasoning (DeepSeek thinking mode). */
+  thinking?: boolean;
 };
 
 /** Optional request fields that are removed (once) when an endpoint answers 400 naming them. */
-const DROPPABLE = ['response_format', 'max_completion_tokens', 'max_tokens', 'reasoning_effort', 'thinking'];
+const DROPPABLE = ['stream_options', 'stream', 'response_format', 'max_completion_tokens', 'max_tokens', 'reasoning_effort', 'thinking'];
+
+interface Assembled {
+  text: string;
+  reasoning: string;
+  refusal: string;
+  toolCalls: { id: string; name: string; arguments: string }[];
+  finish: string;
+  model?: string;
+  usage?: { prompt_tokens?: number; completion_tokens?: number; prompt_cache_hit_tokens?: number; prompt_tokens_details?: { cached_tokens?: number } };
+}
 
 /**
  * OpenAI Chat Completions adapter for any OpenAI-compatible endpoint (OpenAI, DeepSeek, Qwen, Ollama...).
@@ -27,7 +39,8 @@ const DROPPABLE = ['response_format', 'max_completion_tokens', 'max_tokens', 're
  *
  * Reasoning models (DeepSeek thinking mode) return `reasoning_content`; when tools are in the request it
  * must be sent back on every earlier assistant message, otherwise the API answers 400. It is kept in the
- * message's `raw` field and replayed verbatim — never shown to users or stored in run records.
+ * message's `raw` field and replayed verbatim. It is shown and stored only when the run asks for it
+ * ("深度思考"); then the request streams so the reasoning can be printed while the model is still thinking.
  */
 export class OpenAICompatibleProvider implements LLMProvider {
   info;
@@ -37,7 +50,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
   private keyEnvName: string;
 
   constructor(private cfg: OpenAICompatibleOptions) {
-    this.info = { name: cfg.name ?? ('openai' as const), model: cfg.model, mode: 'real' as const, vision: cfg.vision };
+    this.info = { name: cfg.name ?? ('openai' as const), model: cfg.model, mode: 'real' as const, vision: cfg.vision, thinking: cfg.thinking };
     this.capabilities = { tools: cfg.tools, vision: cfg.vision, pdf: false, promptCache: false };
     this.label = cfg.label ?? 'OpenAI 兼容接口';
     this.keyEnvName = cfg.keyEnvName ?? 'OPENAI_API_KEY';
@@ -108,16 +121,19 @@ export class OpenAICompatibleProvider implements LLMProvider {
     } else if (this.cfg.jsonMode && req.wantJson && !this.dropped.has('response_format')) {
       body.response_format = { type: 'json_object' };
     }
-
-    const { data } = await postJson({
+    const call = {
       url: `${this.cfg.baseUrl}/chat/completions`,
       headers: { authorization: `Bearer ${this.cfg.apiKey}` },
       body,
       timeoutMs: this.cfg.timeoutMs,
       providerLabel: this.label,
       keyEnvName: this.keyEnvName,
-    });
+      signal: req.signal,
+    };
+    // Stream only when someone is watching the reasoning ("深度思考"); otherwise one plain request.
+    if (req.onThinking && !this.dropped.has('stream')) return this.toResult(await this.stream(call, body, req.onThinking));
 
+    const { data } = await postJson(call);
     const choice = (Array.isArray(data.choices) ? data.choices[0] : undefined) as
       | {
           message?: {
@@ -129,41 +145,94 @@ export class OpenAICompatibleProvider implements LLMProvider {
           finish_reason?: string;
         }
       | undefined;
-    const finish = choice?.finish_reason ?? 'stop';
-    if (finish === 'insufficient_system_resource') {
+    return this.toResult({
+      text: choice?.message?.content ?? '',
+      reasoning: choice?.message?.reasoning_content ?? '',
+      refusal: choice?.message?.refusal ?? '',
+      toolCalls: (choice?.message?.tool_calls ?? []).map((c) => ({ id: c.id, name: c.function.name, arguments: c.function.arguments })),
+      finish: choice?.finish_reason ?? 'stop',
+      model: typeof data.model === 'string' ? data.model : undefined,
+      usage: data.usage as Assembled['usage'],
+    });
+  }
+
+  /** Streaming request: reasoning deltas go to onThinking as they arrive; text and tool calls are assembled. */
+  private async stream(call: Parameters<typeof postStream>[0], body: Record<string, unknown>, onThinking: (d: string) => void): Promise<Assembled> {
+    body.stream = true;
+    if (!this.dropped.has('stream_options')) body.stream_options = { include_usage: true };
+    const a: Assembled = { text: '', reasoning: '', refusal: '', toolCalls: [], finish: '' };
+    const calls = new Map<number, { id?: string; name?: string; arguments: string }>();
+    await postStream(call, (chunk) => {
+      if (typeof chunk.model === 'string') a.model = chunk.model;
+      if (chunk.usage && typeof chunk.usage === 'object') a.usage = chunk.usage as Assembled['usage'];
+      const choice = (Array.isArray(chunk.choices) ? chunk.choices[0] : undefined) as
+        | { delta?: { content?: string | null; reasoning_content?: string | null; refusal?: string | null; tool_calls?: { index?: number; id?: string; function?: { name?: string; arguments?: string } }[] }; finish_reason?: string | null }
+        | undefined;
+      if (!choice) return;
+      const d = choice.delta ?? {};
+      if (typeof d.reasoning_content === 'string' && d.reasoning_content) {
+        a.reasoning += d.reasoning_content;
+        try {
+          onThinking(d.reasoning_content);
+        } catch {
+          /* display problems must not break the call */
+        }
+      }
+      if (typeof d.content === 'string') a.text += d.content;
+      if (typeof d.refusal === 'string') a.refusal += d.refusal;
+      for (const tc of d.tool_calls ?? []) {
+        const idx = typeof tc.index === 'number' ? tc.index : calls.size;
+        const cur = calls.get(idx) ?? { arguments: '' };
+        if (tc.id) cur.id = tc.id;
+        // the name normally arrives once; tolerate it being split or repeated
+        if (tc.function?.name) cur.name = cur.name && cur.name !== tc.function.name ? cur.name + tc.function.name : tc.function.name;
+        if (tc.function?.arguments) cur.arguments += tc.function.arguments;
+        calls.set(idx, cur);
+      }
+      if (choice.finish_reason) a.finish = choice.finish_reason;
+    });
+    if (!a.finish) {
+      throw new AppError('PROVIDER_NETWORK', `模型服务的流式响应提前结束（${this.label}）。`, { hint: '系统已自动重试。请检查网络或稍后再试。', retryable: true });
+    }
+    a.toolCalls = [...calls.entries()].sort((x, y) => x[0] - y[0]).map(([i, c]) => ({ id: c.id ?? `call_${i}`, name: c.name ?? '', arguments: c.arguments }));
+    return a;
+  }
+
+  private toResult(a: Assembled): CompletionResult {
+    if (a.finish === 'insufficient_system_resource') {
       throw new AppError('PROVIDER_UNAVAILABLE', `模型服务资源不足，本次生成被中断（${this.label}）。`, { hint: '系统已自动重试。请稍后再运行。', retryable: true });
     }
-    const usage = (data.usage ?? {}) as { prompt_tokens?: number; completion_tokens?: number; prompt_cache_hit_tokens?: number; prompt_tokens_details?: { cached_tokens?: number } };
+    const usage = a.usage ?? {};
     const cached = usage.prompt_cache_hit_tokens ?? usage.prompt_tokens_details?.cached_tokens;
     const content: Block[] = [];
-    if (choice?.message?.content) content.push({ type: 'text', text: choice.message.content });
-    for (const c of choice?.message?.tool_calls ?? []) {
+    if (a.text) content.push({ type: 'text', text: a.text });
+    for (const c of a.toolCalls) {
       let input: unknown;
       try {
-        input = JSON.parse(c.function.arguments || '{}');
+        input = JSON.parse(c.arguments || '{}');
       } catch {
-        input = { __unparsable_arguments: c.function.arguments };
+        input = { __unparsable_arguments: c.arguments };
       }
-      content.push({ type: 'tool_use', id: c.id, name: c.function.name, input });
+      content.push({ type: 'tool_use', id: c.id, name: c.name, input });
     }
-    const reasoning = choice?.message?.reasoning_content;
     return {
       content,
-      raw: reasoning ? { reasoning_content: reasoning } : undefined,
-      model: String(data.model ?? this.cfg.model),
+      raw: a.reasoning ? { reasoning_content: a.reasoning } : undefined,
+      reasoning: a.reasoning || undefined,
+      model: a.model ?? this.cfg.model,
       usage: {
         // Cached prompt tokens are reported separately so they can be priced at the cache-hit rate.
         inputTokens: usage.prompt_tokens !== undefined ? usage.prompt_tokens - (cached ?? 0) : undefined,
         outputTokens: usage.completion_tokens,
         cacheReadTokens: cached || undefined,
       },
-      stopReason: choice?.message?.refusal
+      stopReason: a.refusal
         ? 'refusal'
-        : finish === 'tool_calls'
+        : a.finish === 'tool_calls'
           ? 'tool_use'
-          : finish === 'length'
+          : a.finish === 'length'
             ? 'max_tokens'
-            : finish === 'content_filter'
+            : a.finish === 'content_filter'
               ? 'refusal'
               : 'end',
     };

@@ -4,7 +4,8 @@ import type { FaultType } from '../../shared/types';
 import { api } from '../api';
 import DagGraph from '../components/DagGraph';
 import { type FormValues, InputsForm, SamplePicker, toApiInputs } from '../components/inputs';
-import { ErrorNotice, Explain, LifecycleBadge, Loading, useAuth, useLoad } from '../components/ui';
+import { ErrorNotice, Explain, LifecycleBadge, Loading, useAuth, useLoad, useMeta } from '../components/ui';
+import { readThinkingPref, writeThinkingPref } from '../components/prefs';
 import { FAULT_OPTIONS } from './SkillEditor';
 
 export default function RunStart() {
@@ -21,6 +22,9 @@ export default function RunStart() {
   const [faultNode, setFaultNode] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<unknown>();
+  const meta = useMeta();
+  const thinkingAllowed = can('run.view_internals') && meta?.provider.thinking !== false;
+  const [thinking, setThinking] = useState(() => readThinkingPref());
 
   const wf = wfQ.data;
   useEffect(() => {
@@ -48,7 +52,12 @@ export default function RunStart() {
     setBusy(true);
     setError(undefined);
     try {
-      const run = await api.workflows.run(wf!.id, { mode, inputs: toApiInputs(values), fault: mode === 'test' && fault !== 'none' ? { type: fault, nodeId: faultNode || undefined } : undefined });
+      const run = await api.workflows.run(wf!.id, {
+        mode,
+        inputs: toApiInputs(values),
+        fault: mode === 'test' && fault !== 'none' ? { type: fault, nodeId: faultNode || undefined } : undefined,
+        options: thinkingAllowed && thinking ? { showThinking: true } : undefined,
+      });
       nav(`/runs/${run.id}`);
     } catch (e) {
       setError(e);
@@ -144,6 +153,19 @@ export default function RunStart() {
                 </div>
               </details>
             )}
+            <label className="check" style={{ marginTop: 10 }} title={thinkingAllowed ? '在“运行过程”中实时打印模型的思考过程' : '思考过程可能复述任务说明，仅创建者、审核人和管理员可查看；或当前模型未开启思考模式'}>
+              <input
+                type="checkbox"
+                checked={thinkingAllowed && thinking}
+                disabled={!thinkingAllowed}
+                onChange={(e) => {
+                  setThinking(e.target.checked);
+                  writeThinkingPref(e.target.checked);
+                }}
+                data-testid="run-thinking"
+              />
+              深度思考：打印模型的思考过程{thinkingAllowed ? '' : '（当前账号或模型不可用）'}
+            </label>
             <ErrorNotice error={error} />
             <div className="row" style={{ marginTop: 14 }}>
               <button className="primary" onClick={start} disabled={busy || (mode === 'production' ? !canProd : !canTest)} data-testid="start-run">

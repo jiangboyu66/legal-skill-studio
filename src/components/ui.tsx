@@ -130,9 +130,10 @@ export const STATUS_LABEL: Record<RunStatus | NodeStatus, string> = {
   failed: '失败',
   skipped: '已跳过',
   rejected: '已驳回',
+  canceled: '已停止',
 };
 export function StatusBadge({ status }: { status: RunStatus | NodeStatus }) {
-  const cls = status === 'succeeded' ? 'ok' : status === 'failed' ? 'bad' : status === 'running' || status === 'queued' ? 'run' : status === 'waiting_approval' ? 'warn' : status === 'rejected' ? 'bad' : '';
+  const cls = status === 'succeeded' ? 'ok' : status === 'failed' ? 'bad' : status === 'running' || status === 'queued' ? 'run' : status === 'waiting_approval' || status === 'canceled' ? 'warn' : status === 'rejected' ? 'bad' : '';
   return (
     <span className={`badge ${cls}`} data-testid={`status-${status}`}>
       <span className="dot" />

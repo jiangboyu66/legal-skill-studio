@@ -6,6 +6,7 @@ import { runLog } from '../../shared/runlog';
 import type { NodeRun, NodeStatus, ReviewDecision, Run } from '../../shared/types';
 import { api, download } from '../api';
 import DagGraph from '../components/DagGraph';
+import { Icon } from '../components/Icon';
 import OutputView, { GroundingSummary, type ReviewHandler, SecurityNotes, Transcript, VerificationSummary } from '../components/OutputView';
 import { NodeTip, RunProcess, useReplay } from '../components/RunProcess';
 import { statusesAt, useRunLive, useTicker } from '../components/runLive';
@@ -134,8 +135,12 @@ function PartialResults({ run, onOpen, reviewFor }: { run: Run; onOpen: (id: str
   const failed = run.order.map((id) => run.nodes[id]).find((n) => n.status === 'failed' || n.status === 'rejected');
   return (
     <div data-testid="partial-results">
-      <div className="notice error small" style={{ marginBottom: 12 }}>
-        {run.status === 'rejected' ? '运行在审批节点被驳回，没有最终结果。' : '运行没有完成，没有最终结果。'}
+      <div className={`notice ${run.status === 'canceled' ? 'warn' : 'error'} small`} style={{ marginBottom: 12 }}>
+        {run.status === 'rejected'
+          ? '运行在审批节点被驳回，没有最终结果。'
+          : run.status === 'canceled'
+            ? `运行已${run.canceled ? `由 ${run.canceled.byName} ` : ''}手动停止，没有最终结果。可以“从停止处继续”。`
+            : '运行没有完成，没有最终结果。'}
         {failed && (
           <>
             {' '}
@@ -184,7 +189,7 @@ export default function RunDetail() {
   const nav = useNavigate();
   const toast = useToast();
   const { me, can } = useAuth();
-  const { run, error, refreshError, live, active, reload, setRun } = useRunLive(id);
+  const { run, error, refreshError, live, thinking, active, reload, setRun } = useRunLive(id);
   const [view, setView] = useState<string>('final');
   const [tab, setTab] = useState<NodeTab>('output');
   const [busy, setBusy] = useState(false);
@@ -212,6 +217,7 @@ export default function RunDetail() {
   const reviewable = fb.accepted + fb.edited + fb.rejected + fb.pending;
   const waiting = nodes.filter((n) => n.status === 'waiting_approval' && n.approvalRequest);
   const canRerun = run.mode === 'production' ? can('workflow.run') : can('workflow.test');
+  const canStop = active && (run.startedBy === me.user.id || me.user.role === 'admin');
   const replayAt = replay.on ? replay.current?.seq : undefined;
   const replayStatuses = replay.on && replayAt !== undefined ? statusesAt(run, log, replayAt) : undefined;
   const doneCount = nodes.filter((n) => (replayStatuses?.[n.nodeId] ?? n.status) === 'succeeded').length;
@@ -229,11 +235,24 @@ export default function RunDetail() {
     }
   }
 
+  async function stop() {
+    setBusy(true);
+    try {
+      await api.runs.cancel(run!.id);
+      toast('已停止运行');
+      reload();
+    } catch (e) {
+      toast((e as Error).message, 'error');
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function retry() {
     setBusy(true);
     try {
       const r = await api.runs.retry(run!.id);
-      toast('已从失败节点重试（复用已成功节点的结果）');
+      toast(run!.status === 'canceled' ? '已从停止处继续（复用已完成节点的结果）' : '已从失败节点重试（复用已成功节点的结果）');
       nav(`/runs/${r.id}`);
     } catch (e) {
       toast((e as Error).message, 'error');
@@ -323,9 +342,14 @@ export default function RunDetail() {
           <Link className="btn" to={`/runs/compare?a=${run.id}${run.retryOf || run.rerunOf ? `&b=${run.retryOf ?? run.rerunOf}` : ''}`} data-testid="compare-link">
             对比运行
           </Link>
-          {canRerun && run.status === 'failed' && (
-            <button className="primary" onClick={retry} disabled={busy || active} title="沿用原运行的版本与输入，复用已成功节点，只重跑失败及之后的节点" data-testid="retry">
-              从失败节点重试
+          {canStop && (
+            <button className="danger" onClick={stop} disabled={busy || !!run.canceled} title="中断正在执行的模型调用，未完成的节点不再执行；已完成节点的结果保留" data-testid="stop-run">
+              {run.canceled ? '正在停止…' : '■ 停止运行'}
+            </button>
+          )}
+          {canRerun && (run.status === 'failed' || run.status === 'canceled') && (
+            <button className="primary" onClick={retry} disabled={busy || active} title="沿用原运行的版本与输入，复用已完成的节点，只运行没有完成的节点" data-testid="retry">
+              {run.status === 'canceled' ? '从停止处继续' : '从失败节点重试'}
             </button>
           )}
           {canRerun && (
@@ -386,6 +410,16 @@ export default function RunDetail() {
           <ErrorNotice error={run.error} />
         </div>
       )}
+      {run.canceled && (
+        <div className="notice warn small" style={{ marginBottom: 12 }} data-testid="run-canceled">
+          {run.canceled.byName} 于 {fmtTime(run.canceled.at)} 停止了运行{active ? '，正在中断执行中的节点…' : '。已完成节点的结果保留，可以“从停止处继续”。'}
+        </div>
+      )}
+      {run.options?.showThinking && can('run.view_internals') && (
+        <div className="small muted" style={{ marginBottom: 8 }} data-testid="thinking-on">
+          <Icon name="thinking" size={14} /> 本次运行开启了“深度思考”：模型的思考过程会打印在“运行过程”和各节点的“AI 过程”中。
+        </div>
+      )}
 
       {waiting.map((n) => (
         <ErrorBoundary key={n.nodeId} label={`审批「${n.name}」`} resetKey={run.log?.length}>
@@ -427,7 +461,7 @@ export default function RunDetail() {
       </section>
 
       <ErrorBoundary label="运行过程" resetKey={log.length}>
-        <RunProcess run={run} log={log} active={active} live={live} replay={replay} onPickNode={openNode} onHoverNode={setHoverNode} defaultOpen={active || sp.get('replay') === '1'} />
+        <RunProcess run={run} log={log} active={active} live={live} replay={replay} onPickNode={openNode} onHoverNode={setHoverNode} defaultOpen={active || sp.get('replay') === '1'} thinking={thinking} />
       </ErrorBoundary>
 
       <div className="tabs" style={{ marginTop: 18 }} ref={resultsRef}>
@@ -452,7 +486,7 @@ export default function RunDetail() {
               <SafeOutput node={outNode} run={run} value={run.finalOutput} format={run.finalFormat ?? 'markdown'} onReview={outNode ? reviewFor(outNode.nodeId) : undefined} />
               <MissedPanel run={run} onChange={(r) => setRun(() => r)} canEdit={can('run.review')} />
             </>
-          ) : run.status === 'failed' || run.status === 'rejected' ? (
+          ) : run.status === 'failed' || run.status === 'rejected' || run.status === 'canceled' ? (
             <PartialResults run={run} onOpen={openNode} reviewFor={reviewFor} />
           ) : (
             <div className="empty" data-testid="final-pending">

@@ -27,6 +27,7 @@ import type {
   RulePackContent,
   RulePackView,
   Run,
+  RunOptions,
   RunSummary,
   SampleMaterial,
   SkillConfig,
@@ -174,15 +175,15 @@ export async function openFile(url: string) {
 }
 
 /**
- * Server-sent run events over fetch (EventSource cannot send this tab's session header).
+ * Server-sent events over fetch (EventSource cannot send this tab's session header).
  * Returns a function that closes the stream.
  */
-export function streamRunEvents(runId: string, h: { onOpen?: () => void; onEvent: (e: RunEvent) => void; onClose?: (err?: unknown) => void }): () => void {
+export function streamEvents(url: string, h: { onOpen?: () => void; onEvent: (e: RunEvent) => void; onClose?: (err?: unknown) => void }): () => void {
   const ctrl = new AbortController();
   (async () => {
     try {
-      const res = await fetch(`/api/runs/${runId}/events`, { headers: { ...sessionHeaders(), accept: 'text/event-stream' }, signal: ctrl.signal });
-      if (!res.ok || !res.body) throw new ApiError(`HTTP_${res.status}`, '实时连接失败');
+      const res = await fetch(url, { headers: { ...sessionHeaders(), accept: 'text/event-stream' }, signal: ctrl.signal });
+      if (!res.ok || !res.body) throw new ApiError(`HTTP_${res.status}`, '实时连接失败', undefined, res.status);
       h.onOpen?.();
       const reader = res.body.getReader();
       const dec = new TextDecoder();
@@ -216,6 +217,9 @@ export function streamRunEvents(runId: string, h: { onOpen?: () => void; onEvent
   })();
   return () => ctrl.abort();
 }
+
+/** Live events of one run (status, activity log, transcript, streamed reasoning). */
+export const streamRunEvents = (runId: string, h: Parameters<typeof streamEvents>[1]) => streamEvents(`/api/runs/${runId}/events`, h);
 
 const q = (params: Record<string, string | undefined>) => {
   const s = new URLSearchParams(Object.entries(params).filter(([, v]) => v) as [string, string][]).toString();
@@ -295,7 +299,7 @@ export const api = {
     duplicate: (id: string) => req<WorkflowView>('POST', `/api/workflows/${id}/duplicate`),
     submit: (id: string, note: string) => req<ReviewRequest>('POST', `/api/workflows/${id}/submit`, { note }),
     validate: (def: WorkflowDef) => req<{ issues: ValidationIssue[] }>('POST', '/api/workflows/validate', { def }),
-    run: (id: string, body: { mode: 'production' | 'test'; inputs: Record<string, InputValue>; fault?: FaultInjection }) => req<Run>('POST', `/api/workflows/${id}/runs`, body),
+    run: (id: string, body: { mode: 'production' | 'test'; inputs: Record<string, InputValue>; fault?: FaultInjection; options?: RunOptions }) => req<Run>('POST', `/api/workflows/${id}/runs`, body),
   },
   reviews: {
     inbox: () => req<ReviewInbox>('GET', '/api/reviews'),
@@ -316,6 +320,7 @@ export const api = {
     get: (id: string) => req<Run>('GET', `/api/runs/${id}`),
     rerun: (id: string) => req<Run>('POST', `/api/runs/${id}/rerun`, {}),
     retry: (id: string) => req<Run>('POST', `/api/runs/${id}/retry`, {}),
+    cancel: (id: string) => req<Run>('POST', `/api/runs/${id}/cancel`, {}),
     addMissed: (id: string, m: { nodeId: string; ruleId: string; quote: string; issue: string }) => req<MissedFinding[]>('POST', `/api/runs/${id}/missed`, m),
     removeMissed: (id: string, mid: string) => req<MissedFinding[]>('DELETE', `/api/runs/${id}/missed/${mid}`),
     decide: (id: string, nodeId: string, decision: 'approved' | 'rejected', comment?: string) => req<Run>('POST', `/api/runs/${id}/nodes/${nodeId}/decision`, { decision, comment }),
@@ -330,8 +335,10 @@ export const api = {
     get: (id: string) => req<Conversation>('GET', `/api/conversations/${id}`),
     update: (id: string, body: { title?: string; workflowId?: string }) => req<Conversation>('PATCH', `/api/conversations/${id}`, body),
     remove: (id: string) => req<{ ok: true }>('DELETE', `/api/conversations/${id}`),
-    send: (id: string, body: { mode: ChatMode; text: string; workflowId?: string; attachments?: { documentId: string }[]; inputs?: Record<string, string>; runId?: string; rerunOf?: string }) =>
+    send: (id: string, body: { mode: ChatMode; text: string; workflowId?: string; attachments?: { documentId: string }[]; inputs?: Record<string, string>; runId?: string; rerunOf?: string; thinking?: boolean }) =>
       req<ChatSendResult>('POST', `/api/conversations/${id}/messages`, body),
+    cancel: (id: string) => req<{ ok: true }>('POST', `/api/conversations/${id}/cancel`, {}),
+    eventsUrl: (id: string) => `/api/conversations/${id}/events`,
   },
   admin: {
     users: () => req<User[]>('GET', '/api/admin/users'),

@@ -1,6 +1,6 @@
 import { buildOutputSchema } from '../../shared/schema';
 import type { AppErrorInfo, OutputField, PermissionEffect, TranscriptEntry, Usage } from '../../shared/types';
-import { AppError, toErrorInfo } from '../errors';
+import { AppError, Errors, toErrorInfo } from '../errors';
 import { completeWithRetry } from '../services/llm';
 import { type Block, type ChatMessage, type CompletionResult, type LLMProvider, type MockHints, type SystemBlock, textOf, type ToolSchema } from '../services/llm/types';
 import type { HookRunner } from './hooks';
@@ -35,6 +35,14 @@ export interface QueryEngineConfig {
   /** Applied to every transcript entry before it is recorded or streamed (e.g. to redact a leaked system prompt). */
   scrub?: (e: TranscriptEntry) => TranscriptEntry;
   hints?: MockHints;
+  /** "深度思考": record the model's reasoning as transcript entries and stream it live. */
+  showThinking?: boolean;
+  /** Live reasoning while a call streams; `key` changes for every model call (and retry attempt). */
+  onThinkingDelta?: (key: string, text: string) => void;
+  /** Label for thinking entries of a sub-agent (e.g. "verifier"). */
+  agentLabel?: string;
+  /** Stops the loop and the in-flight model request when the run is stopped. */
+  signal?: AbortSignal;
 }
 
 export interface QueryResult {
@@ -113,18 +121,38 @@ export class QueryEngine {
 
   private async call(tools?: ToolSchema[]): Promise<CompletionResult> {
     try {
+      if (this.cfg.signal?.aborted) throw Errors.canceled();
       this.cfg.onModelCall?.(this.turns);
+      const turn = this.turns;
+      let attempt = 1;
+      const live = this.cfg.showThinking && this.cfg.onThinkingDelta;
+      const onThinking = live ? (d: string) => this.cfg.onThinkingDelta!(`${this.cfg.agentLabel ?? 'main'}.${turn}.${attempt}`, d) : undefined;
       const { result, attempts } = await completeWithRetry(
         this.cfg.provider,
-        { system: this.cfg.system, messages: this.messages, tools, maxTokens: this.cfg.maxTokens, wantJson: !!this.cfg.outputFields, hints: this.cfg.hints },
+        {
+          system: this.cfg.system,
+          messages: this.messages,
+          tools,
+          maxTokens: this.cfg.maxTokens,
+          wantJson: !!this.cfg.outputFields,
+          hints: this.cfg.hints,
+          onThinking: this.cfg.showThinking ? onThinking ?? (() => undefined) : undefined,
+          signal: this.cfg.signal,
+        },
         {
           ...this.cfg.retry,
-          onRetry: (attempt, err) => this.emit({ type: 'note', turn: this.turns, message: `模型调用失败（${err.message}），正在第 ${attempt + 1} 次尝试` }),
+          onRetry: (a, err) => {
+            attempt = a + 1;
+            this.emit({ type: 'note', turn: this.turns, message: `模型调用失败（${err.message}），正在第 ${a + 1} 次尝试` });
+          },
         },
       );
       this.attempts += attempts;
       this.model = result.model;
       this.addUsage(result.usage);
+      if (this.cfg.showThinking && result.reasoning?.trim()) {
+        this.emit({ type: 'thinking', turn: this.turns, text: result.reasoning.trim().slice(0, 20_000), ...(this.cfg.agentLabel ? { agent: this.cfg.agentLabel } : {}) });
+      }
       if (result.stopReason === 'refusal') {
         throw new AppError('MODEL_REFUSED', '模型拒绝处理该请求。', { hint: '请检查材料或任务说明是否触发了模型的安全策略，必要时改写说明。' });
       }

@@ -2,6 +2,8 @@ import { type ReactNode, useCallback, useEffect, useMemo, useState } from 'react
 import { Link, Navigate, NavLink, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import type { Me, Meta } from '../shared/types';
 import { api, setUnauthenticatedHandler } from './api';
+import { Icon } from './components/Icon';
+import { ConversationsCtx, type ConversationsState } from './components/prefs';
 import { AuthCtx, type AuthState, ErrorBoundary, Loading, MetaCtx, RoleBadge, useAuth, useLoad } from './components/ui';
 import Chat from './pages/Chat';
 import Admin from './pages/Admin';
@@ -63,19 +65,57 @@ function Guard({ any, children }: { any: string[]; children: ReactNode }) {
   return any.some(can) ? <>{children}</> : <Forbidden />;
 }
 
+function ago(iso: string) {
+  const s = (Date.now() - Date.parse(iso)) / 1000;
+  if (s < 60) return '刚刚';
+  if (s < 3600) return `${Math.floor(s / 60)} 分钟前`;
+  if (s < 86400) return `${Math.floor(s / 3600)} 小时前`;
+  return iso.slice(5, 10).replace('-', '/');
+}
+
+/** Recent conversations in the main sidebar (the chat page reloads the list after changes). */
+function SideConversations({ items, activeId }: { items?: ConversationsState['items']; activeId?: string }) {
+  return (
+    <div className="side-convs" data-testid="chat-list" aria-label="最近对话">
+      <div className="side-sec">最近对话</div>
+      {!items ? (
+        <div className="side-empty">加载中…</div>
+      ) : !items.length ? (
+        <div className="side-empty">还没有对话。发送第一份材料后会保存在这里。</div>
+      ) : (
+        items.map((c) => (
+          <Link key={c.id} to={`/chat/${c.id}`} className={`side-conv ${c.id === activeId ? 'on' : ''}`} title={c.lastText ? `${c.title}\n${c.lastText}` : c.title} data-testid={`chat-item-${c.id}`}>
+            <span className="sc-title">{c.title}</span>
+            <span className="sc-meta">
+              {ago(c.updatedAt)}
+              {c.runIds.length ? ` · ${c.runIds.length} 次审阅` : ''}
+            </span>
+          </Link>
+        ))
+      )}
+    </div>
+  );
+}
+
 function Shell({ meta }: { meta: Meta | null }) {
   const { me, logout, can } = useAuth();
   const location = useLocation();
+  const navigate = useNavigate();
   const may = (area: keyof typeof AREA) => AREA[area].some(can);
   const chat = location.pathname === '/' || location.pathname.startsWith('/chat/');
+  const activeConv = location.pathname.startsWith('/chat/') ? location.pathname.split('/')[2] : undefined;
+  const [convKey, setConvKey] = useState(0);
+  const convQ = useLoad(() => api.conversations.list(), [convKey]);
+  const conversations = useMemo<ConversationsState>(() => ({ items: convQ.data, reload: () => setConvKey((k) => k + 1) }), [convQ.data]);
   return (
+    <ConversationsCtx.Provider value={conversations}>
     <div className="shell">
       <nav className="side" aria-label="主导航">
         <div className="brand">Legal Skill Studio</div>
         <div className="brand-sub">{me.org.name}</div>
-        <NavLink to="/" end className={() => (chat ? 'active' : '')} data-testid="nav-chat">
-          对话
-        </NavLink>
+        <button type="button" className={`side-new ${chat && !activeConv ? 'on' : ''}`} onClick={() => navigate('/')} data-testid="chat-new">
+          <Icon name="plus" size={15} /> 新对话
+        </button>
         <NavLink to="/workflows">工作流</NavLink>
         <NavLink to="/skills">Skills</NavLink>
         {may('rulepacks') && <NavLink to="/rulepacks">规则包</NavLink>}
@@ -87,7 +127,7 @@ function Shell({ meta }: { meta: Meta | null }) {
         <NavLink to="/runs">运行记录</NavLink>
         <NavLink to="/documents">物料文件</NavLink>
         {may('admin') && <NavLink to="/admin">组织管理</NavLink>}
-        <div className="spacer" />
+        <SideConversations items={convQ.data} activeId={activeConv} />
         {meta && (
           <div className={`mode ${meta.provider.mode}`} data-testid="provider-mode">
             {meta.provider.mode === 'mock' ? (
@@ -143,6 +183,7 @@ function Shell({ meta }: { meta: Meta | null }) {
         </div>
       </main>
     </div>
+    </ConversationsCtx.Provider>
   );
 }
 

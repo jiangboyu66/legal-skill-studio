@@ -1,4 +1,4 @@
-import { AppError } from '../../errors';
+import { AppError, Errors } from '../../errors';
 
 export interface HttpCall {
   url: string;
@@ -7,7 +7,42 @@ export interface HttpCall {
   timeoutMs: number;
   providerLabel: string;
   keyEnvName: string;
+  /** Aborts the request when the run is stopped (reported as RUN_CANCELED, never retried). */
+  signal?: AbortSignal;
 }
+
+/** Timeout (reset with touch() while a stream is still sending) linked to the caller's abort signal. */
+function linkSignals(timeoutMs: number, outer?: AbortSignal) {
+  const controller = new AbortController();
+  let timedOut = false;
+  let timer: ReturnType<typeof setTimeout>;
+  const arm = () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, timeoutMs);
+  };
+  arm();
+  const onAbort = () => controller.abort();
+  if (outer?.aborted) controller.abort();
+  else outer?.addEventListener('abort', onAbort, { once: true });
+  return {
+    signal: controller.signal,
+    timedOut: () => timedOut,
+    touch: arm,
+    done: () => {
+      clearTimeout(timer);
+      outer?.removeEventListener('abort', onAbort);
+    },
+  };
+}
+
+const timeoutError = (call: HttpCall) =>
+  new AppError('PROVIDER_TIMEOUT', `模型调用超时（超过 ${Math.round(call.timeoutMs / 1000)} 秒，${call.providerLabel}）。`, {
+    hint: '系统已自动重试。可稍后再试、精简输入，或调大 LLM_TIMEOUT_MS。',
+    retryable: true,
+  });
 
 /** Extracts a provider error message from Anthropic- or OpenAI-style error bodies. */
 function providerMessage(body: unknown): string {
@@ -86,36 +121,29 @@ export function mapHttpError(status: number, body: unknown, headers: Headers, ca
   });
 }
 
-/** POST JSON with timeout; throws AppError on network/timeout/HTTP errors. */
+/** POST JSON with timeout; throws AppError on network/timeout/HTTP errors (RUN_CANCELED when stopped). */
 export async function postJson(call: HttpCall): Promise<{ data: Record<string, unknown>; headers: Headers }> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), call.timeoutMs);
+  if (call.signal?.aborted) throw Errors.canceled();
+  const link = linkSignals(call.timeoutMs, call.signal);
   let res: Response;
+  let text = '';
   try {
     res = await fetch(call.url, {
       method: 'POST',
       headers: { 'content-type': 'application/json', ...call.headers },
       body: JSON.stringify(call.body),
-      signal: controller.signal,
+      signal: link.signal,
     });
+    text = await res.text();
   } catch (err) {
-    clearTimeout(timer);
-    if ((err as Error)?.name === 'AbortError') {
-      throw new AppError('PROVIDER_TIMEOUT', `模型调用超时（超过 ${Math.round(call.timeoutMs / 1000)} 秒，${call.providerLabel}）。`, {
-        hint: '系统已自动重试。可稍后再试、精简输入，或调大 LLM_TIMEOUT_MS。',
-        retryable: true,
-      });
-    }
+    if (call.signal?.aborted) throw Errors.canceled();
+    if (link.timedOut() || (err as Error)?.name === 'AbortError') throw timeoutError(call);
     throw new AppError('PROVIDER_NETWORK', `无法连接模型服务（${call.providerLabel}）：${(err as Error)?.message ?? err}`, {
       hint: '请检查网络、代理设置和接口地址（*_BASE_URL）。',
       retryable: true,
     });
-  }
-  let text = '';
-  try {
-    text = await res.text();
   } finally {
-    clearTimeout(timer);
+    link.done();
   }
   let body: unknown = text;
   try {
@@ -131,4 +159,78 @@ export async function postJson(call: HttpCall): Promise<{ data: Record<string, u
     });
   }
   return { data: body as Record<string, unknown>, headers: res.headers };
+}
+
+/**
+ * POST with a Server-Sent Events response (OpenAI-style streaming): calls onData for every `data:` JSON
+ * chunk until `[DONE]`. Comment lines (keep-alive) are ignored. The timeout is an idle timeout: it is
+ * reset whenever data arrives, so long reasoning is not cut off while the model is still writing.
+ */
+export async function postStream(call: HttpCall, onData: (chunk: Record<string, unknown>) => void): Promise<{ headers: Headers; done: boolean }> {
+  if (call.signal?.aborted) throw Errors.canceled();
+  const link = linkSignals(call.timeoutMs, call.signal);
+  const fail = (err: unknown): never => {
+    if (err instanceof AppError) throw err;
+    if (call.signal?.aborted) throw Errors.canceled();
+    if (link.timedOut() || (err as Error)?.name === 'AbortError') throw timeoutError(call);
+    throw new AppError('PROVIDER_NETWORK', `与模型服务的连接中断（${call.providerLabel}）：${(err as Error)?.message ?? err}`, {
+      hint: '系统已自动重试。请检查网络、代理设置和接口地址（*_BASE_URL）。',
+      retryable: true,
+    });
+  };
+  try {
+    let res: Response;
+    try {
+      res = await fetch(call.url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', accept: 'text/event-stream', ...call.headers },
+        body: JSON.stringify(call.body),
+        signal: link.signal,
+      });
+    } catch (err) {
+      return fail(err);
+    }
+    if (!res.ok || !res.body) {
+      const text = await res.text().catch(() => '');
+      let body: unknown = text;
+      try {
+        body = text ? JSON.parse(text) : {};
+      } catch {
+        /* keep raw text */
+      }
+      throw mapHttpError(res.status, body, res.headers, call);
+    }
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '';
+    try {
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        link.touch();
+        buf += dec.decode(value, { stream: true });
+        let cut: number;
+        while ((cut = buf.indexOf('\n')) >= 0) {
+          const line = buf.slice(0, cut).replace(/\r$/, '');
+          buf = buf.slice(cut + 1);
+          if (!line.startsWith('data:')) continue; // blank separators, ": keep-alive" comments, event names
+          const data = line.slice(5).trim();
+          if (data === '[DONE]') return { headers: res.headers, done: true };
+          let chunk: Record<string, unknown>;
+          try {
+            chunk = JSON.parse(data) as Record<string, unknown>;
+          } catch {
+            continue;
+          }
+          if (chunk.error) throw mapHttpError(500, chunk, res.headers, call);
+          onData(chunk);
+        }
+      }
+    } catch (err) {
+      return fail(err);
+    }
+    return { headers: res.headers, done: false };
+  } finally {
+    link.done();
+  }
 }

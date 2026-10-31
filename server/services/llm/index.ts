@@ -1,6 +1,6 @@
 import type { FaultType } from '../../../shared/types';
 import type { AppConfig } from '../../config';
-import { AppError } from '../../errors';
+import { AppError, Errors } from '../../errors';
 import type { FeatureSet } from '../../features';
 import { AnthropicProvider } from './anthropic';
 import { MockProvider } from './mock';
@@ -36,6 +36,7 @@ export function createProvider(cfg: AppConfig, features: FeatureSet): LLMProvide
       label: 'DeepSeek',
       keyEnvName: 'DEEPSEEK_API_KEY',
       extraBody,
+      thinking: d.thinking === 'enabled',
     });
   }
   if (pick === 'openai') {
@@ -63,7 +64,16 @@ class MisconfiguredProvider implements LLMProvider {
   }
 }
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const sleep = (ms: number, signal?: AbortSignal) =>
+  new Promise<void>((resolve) => {
+    const t = setTimeout(done, ms);
+    function done() {
+      clearTimeout(t);
+      signal?.removeEventListener('abort', done);
+      resolve();
+    }
+    signal?.addEventListener('abort', done, { once: true });
+  });
 
 /**
  * Error categorisation + retry (cf. QueryEngine categorizeRetryableAPIError):
@@ -78,9 +88,11 @@ export async function completeWithRetry(
   let attempt = 0;
   for (;;) {
     attempt++;
+    if (req.signal?.aborted) throw Errors.canceled();
     try {
       return { result: await provider.complete(req), attempts: attempt };
     } catch (err) {
+      if (req.signal?.aborted) throw Errors.canceled();
       const retryable = err instanceof AppError && err.retryable;
       if (!retryable || attempt > opts.maxRetries) {
         if (err instanceof AppError) {
@@ -90,7 +102,7 @@ export async function completeWithRetry(
         throw err;
       }
       opts.onRetry?.(attempt, err as AppError);
-      await sleep(Math.min((err as AppError).retryAfterMs ?? opts.baseMs * 2 ** (attempt - 1), 20_000));
+      await sleep(Math.min((err as AppError).retryAfterMs ?? opts.baseMs * 2 ** (attempt - 1), 20_000), req.signal);
     }
   }
 }

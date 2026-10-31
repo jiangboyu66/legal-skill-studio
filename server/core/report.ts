@@ -3,7 +3,7 @@ import type { GroundingResult, NodeRun, Run, VerificationItem } from '../../shar
 import { jurisdictionText } from './jurisdiction';
 
 const RUN_STATUS: Record<string, string> = {
-  queued: '排队中', running: '运行中', waiting_approval: '等待审批', succeeded: '成功', failed: '失败', rejected: '已驳回',
+  queued: '排队中', running: '运行中', waiting_approval: '等待审批', succeeded: '成功', failed: '失败', rejected: '已驳回', canceled: '已停止',
 };
 const NODE_STATUS: Record<string, string> = {
   pending: '等待', running: '运行中', waiting_approval: '等待审批', succeeded: '成功', failed: '失败', skipped: '已跳过', rejected: '已驳回',

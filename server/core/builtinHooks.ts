@@ -143,6 +143,10 @@ export const verificationHook: Hook<SkillOutputContext> = {
             },
             maxTurns: VERIFIER.maxTurns ?? 6,
             maxTokens: rt.cfg.maxTokens,
+            showThinking: ctx.showThinking,
+            onThinkingDelta: ctx.onThinkingDelta ? (key, text) => ctx.onThinkingDelta!(key, text, 'verifier') : undefined,
+            agentLabel: 'verifier',
+            signal: ctx.signal,
             retry: { maxRetries: rt.cfg.maxRetries, baseMs: rt.cfg.retryBaseMs },
             priceFn: rt.priceFn,
             hints: {

@@ -56,6 +56,10 @@ export function transcriptLine(e: TranscriptEntry): { kind: RunLogKind; text: st
       return { kind: 'note', text: `${e.hook}：${clip(e.message, 140)}` };
     case 'note':
       return { kind: /失败|拦截|错误/.test(e.message) ? 'error' : 'note', text: clip(e.message, 160), detail: e.message.length > 160 ? e.message : undefined };
+    case 'thinking': {
+      const who = e.agent === 'verifier' ? '核验代理思考' : '思考';
+      return { kind: 'thinking', text: `${who}：${clip(e.text, 160)}`, detail: e.text.length > 160 ? e.text.slice(0, 4000) + (e.text.length > 4000 ? '…（完整内容见节点的“AI 过程”）' : '') : undefined };
+    }
   }
 }
 
@@ -120,7 +124,8 @@ export function deriveLog(run: Run): RunLogEntry[] {
 
 export function runEndLine(run: Run): string {
   const ms = run.finishedAt && (run.startedAt ?? run.createdAt) ? Date.parse(run.finishedAt) - Date.parse(run.startedAt ?? run.createdAt) : undefined;
-  const label = { succeeded: '运行完成', failed: '运行失败', rejected: '运行在审批节点被驳回' }[run.status as 'succeeded' | 'failed' | 'rejected'] ?? '运行结束';
+  const label =
+    { succeeded: '运行完成', failed: '运行失败', rejected: '运行在审批节点被驳回', canceled: `运行已停止${run.canceled ? `（${run.canceled.byName}）` : ''}` }[run.status as 'succeeded' | 'failed' | 'rejected' | 'canceled'] ?? '运行结束';
   const tokens = run.usage.inputTokens !== undefined ? `，token ${run.usage.inputTokens}/${run.usage.outputTokens ?? 0}` : '';
   return `${label}${ms !== undefined ? `，总用时 ${secs(ms)}` : ''}${tokens}${run.status === 'failed' && run.error ? `：${run.error.message}` : ''}`;
 }

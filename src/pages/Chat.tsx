@@ -1,15 +1,16 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { runLog } from '../../shared/runlog';
-import type { ChatMode, Conversation, ConversationMessage, ConversationSummary, DocumentSummary, NodeRun, Run, RunLogEntry, SampleMaterial, WorkflowView } from '../../shared/types';
-import { api, download } from '../api';
+import type { ChatMode, Conversation, ConversationMessage, DocumentSummary, NodeRun, Run, RunLogEntry, RunStatus, SampleMaterial, WorkflowView } from '../../shared/types';
+import { api, download, streamEvents } from '../api';
+import { Icon } from '../components/Icon';
 import { OpenOriginal } from '../components/inputs';
 import OutputView, { SafeMarkdown, SecurityNotes } from '../components/OutputView';
+import { readThinkingPref, readWorkflowPref, useConversations, writeThinkingPref, writeWorkflowPref } from '../components/prefs';
 import { clock, NodeTip } from '../components/RunProcess';
-import { useRunLive, useTicker } from '../components/runLive';
-import { AutoTextarea, ErrorBoundary, ErrorNotice, fmtDuration, fmtTime, ModeBadge, STATUS_LABEL, StatusBadge, useAuth, useLoad, useToast } from '../components/ui';
+import { type LiveThinking, useRunLive, useTicker } from '../components/runLive';
+import { AutoTextarea, ErrorBoundary, ErrorNotice, fmtDuration, fmtTime, ModeBadge, STATUS_LABEL, StatusBadge, useAuth, useLoad, useMeta, useToast } from '../components/ui';
 
-const WF_KEY = 'lss.chat.workflow';
 const DEMO_WF = 'wf_demo_sg_marketing_review';
 const ACCEPT = '.pdf,.docx,.png,.jpg,.jpeg,.webp,.txt,.md';
 
@@ -20,29 +21,6 @@ interface Draft {
 }
 const EMPTY: Draft = { text: '', atts: [], params: {} };
 
-function ago(iso: string) {
-  const s = (Date.now() - Date.parse(iso)) / 1000;
-  if (s < 60) return '刚刚';
-  if (s < 3600) return `${Math.floor(s / 60)} 分钟前`;
-  if (s < 86400) return `${Math.floor(s / 3600)} 小时前`;
-  return iso.slice(5, 10).replace('-', '/');
-}
-
-function readPref(): string {
-  try {
-    return localStorage.getItem(WF_KEY) ?? '';
-  } catch {
-    return '';
-  }
-}
-function writePref(id: string) {
-  try {
-    localStorage.setItem(WF_KEY, id);
-  } catch {
-    /* ignore */
-  }
-}
-
 /**
  * Chat home: send material (upload / paste / sample) → a workflow run starts and reports its progress in
  * the thread → the result stays in the conversation → ask follow-up questions about it. The left column
@@ -52,8 +30,9 @@ export default function Chat() {
   const { id } = useParams();
   const nav = useNavigate();
   const { can } = useAuth();
-  const [listKey, setListKey] = useState(0);
-  const listQ = useLoad(() => api.conversations.list(), [listKey]);
+  const toast = useToast();
+  const meta = useMeta();
+  const convs = useConversations();
   const wfQ = useLoad(() => api.workflows.list(), []);
   const samplesQ = useLoad(() => api.samples(), []);
   const [conv, setConv] = useState<Conversation | null>(null);
@@ -65,6 +44,14 @@ export default function Chat() {
   const [pending, setPending] = useState<{ text: string; at: string } | null>(null);
   const [focusTick, setFocusTick] = useState(0);
   const canRun = can('workflow.run');
+  // "深度思考": print the model's reasoning — roles that may see run internals, models that return it
+  const thinkingAllowed = can('run.view_internals') && meta?.provider.thinking !== false;
+  const [thinkingOn, setThinkingOn] = useState(readThinkingPref);
+  const thinking = thinkingAllowed && thinkingOn;
+  const [runStatus, setRunStatus] = useState<Record<string, RunStatus>>({});
+  const onRunStatus = useCallback((runId: string, st: RunStatus) => setRunStatus((cur) => (cur[runId] === st ? cur : { ...cur, [runId]: st })), []);
+  const [liveAnswer, setLiveAnswer] = useState<{ key: string; text: string } | null>(null);
+  const [stopping, setStopping] = useState(false);
 
   const runnable = useMemo(() => (wfQ.data ?? []).filter((w) => w.publishedVersion && w.published), [wfQ.data]);
   const shown = conv && conv.id === id ? conv : null;
@@ -102,7 +89,7 @@ export default function Chat() {
   // Workflow for the next "review" message: the conversation's last one, else the user's last choice.
   useEffect(() => {
     if (!runnable.length) return;
-    const pick = [shown?.workflowId, readPref(), DEMO_WF, runnable[0].id].find((x) => x && runnable.some((w) => w.id === x));
+    const pick = [shown?.workflowId, readWorkflowPref(), DEMO_WF, runnable[0].id].find((x) => x && runnable.some((w) => w.id === x));
     setWfId(pick ?? runnable[0].id);
   }, [runnable, shown?.workflowId]);
 
@@ -122,6 +109,38 @@ export default function Chat() {
 
   const runIds = useMemo(() => (shown?.messages ?? []).flatMap((m) => (m.role === 'assistant' && m.kind === 'run' ? [m.runId] : [])), [shown]);
   const latestRun = runIds[runIds.length - 1];
+  const latestActive = !!latestRun && (runStatus[latestRun] === 'queued' || runStatus[latestRun] === 'running');
+
+  // Live reasoning of a follow-up answer while it is written (conversation event stream).
+  const convId = shown?.id;
+  useEffect(() => {
+    if (!convId || !thinking) return;
+    return streamEvents(api.conversations.eventsUrl(convId), {
+      onEvent: (e) => {
+        if (e.type !== 'thinking_delta') return;
+        setLiveAnswer((cur) => (cur && cur.key === e.key ? { key: e.key, text: cur.text + e.text } : { key: e.key, text: e.text }));
+      },
+    });
+  }, [convId, thinking]);
+  useEffect(() => {
+    if (!pending) setLiveAnswer(null);
+  }, [pending]);
+
+  /** The send button doubles as "停止": stops the answer being written, else the running workflow. */
+  const stopTarget: 'answer' | 'run' | undefined = pending || awaiting ? 'answer' : latestActive ? 'run' : undefined;
+  async function stop() {
+    if (!shown || !stopTarget) return;
+    setStopping(true);
+    try {
+      if (stopTarget === 'answer') await api.conversations.cancel(shown.id);
+      else await api.runs.cancel(latestRun!);
+      toast(stopTarget === 'answer' ? '已停止回答' : '已停止运行');
+    } catch (e) {
+      toast((e as Error).message, 'error');
+    } finally {
+      setStopping(false);
+    }
+  }
 
   async function send(p: { mode: ChatMode; text: string; atts: DocumentSummary[]; params: Record<string, string>; rerunOf?: string }) {
     let c = shown;
@@ -130,7 +149,7 @@ export default function Chat() {
       created.current = c.id;
       setConv(c);
       nav(`/chat/${c.id}`);
-      setListKey((k) => k + 1);
+      convs.reload();
     }
     if (p.mode === 'ask') setPending({ text: p.text, at: new Date().toISOString() });
     try {
@@ -142,10 +161,11 @@ export default function Chat() {
         inputs: p.params,
         runId: p.mode === 'ask' ? askRun ?? latestRun : undefined,
         rerunOf: p.rerunOf,
+        thinking,
       });
       applyConv(r.conversation);
-      setListKey((k) => k + 1);
-      if (p.mode === 'run') writePref(wfId);
+      convs.reload();
+      if (p.mode === 'run') writeWorkflowPref(wfId);
     } finally {
       setPending(null);
     }
@@ -169,20 +189,13 @@ export default function Chat() {
 
   return (
     <div className="chat" data-testid="chat">
-      <aside className="chat-list" aria-label="对话列表">
-        <button className="primary chat-new" onClick={() => nav('/')} data-testid="chat-new">
-          ＋ 新对话
-        </button>
-        <ConversationList items={listQ.data} activeId={id} />
-      </aside>
-
       <section className="chat-main">
         {shown ? (
           <ChatHeader
             conv={shown}
-            onRenamed={(c) => (setConv(c), setListKey((k) => k + 1))}
+            onRenamed={(c) => (setConv(c), convs.reload())}
             onDeleted={() => {
-              setListKey((k) => k + 1);
+              convs.reload();
               nav('/');
             }}
           />
@@ -197,9 +210,11 @@ export default function Chat() {
           onSample={pickSample}
           onAsk={startAsk}
           onRerun={(runId) => send({ mode: 'run', text: '', atts: [], params: {}, rerunOf: runId })}
+          onRunStatus={onRunStatus}
           canRun={canRun}
           workflows={runnable}
           wfId={wfId}
+          liveAnswer={liveAnswer?.text}
         />
         <Composer
           convId={id}
@@ -220,28 +235,18 @@ export default function Chat() {
           onSend={send}
           focusTick={focusTick}
           busy={!!pending || awaiting}
+          thinking={thinkingOn}
+          thinkingAllowed={thinkingAllowed}
+          setThinking={(on) => {
+            setThinkingOn(on);
+            writeThinkingPref(on);
+          }}
+          stopTarget={stopTarget}
+          stopping={stopping}
+          onStop={stop}
         />
       </section>
     </div>
-  );
-}
-
-function ConversationList({ items, activeId }: { items?: ConversationSummary[]; activeId?: string }) {
-  if (!items) return <div className="muted small chat-list-empty">加载中…</div>;
-  if (!items.length) return <div className="muted small chat-list-empty">还没有对话。发送第一份材料后，对话会保存在这里。</div>;
-  return (
-    <nav className="chat-items" data-testid="chat-list">
-      {items.map((c) => (
-        <Link key={c.id} to={`/chat/${c.id}`} className={`chat-item ${c.id === activeId ? 'on' : ''}`} data-testid={`chat-item-${c.id}`}>
-          <span className="ci-title">{c.title}</span>
-          <span className="ci-meta">
-            {ago(c.updatedAt)}
-            {c.runIds.length ? ` · ${c.runIds.length} 次审阅` : ''}
-          </span>
-          {c.lastText && <span className="ci-last">{c.lastText}</span>}
-        </Link>
-      ))}
-    </nav>
   );
 }
 
@@ -330,9 +335,11 @@ function Thread({
   onSample,
   onAsk,
   onRerun,
+  onRunStatus,
   canRun,
   workflows,
   wfId,
+  liveAnswer,
 }: {
   conv: Conversation | null;
   loading: boolean;
@@ -343,9 +350,11 @@ function Thread({
   onSample: (s: SampleMaterial) => Promise<void>;
   onAsk: (runId: string) => void;
   onRerun: (runId: string) => Promise<void>;
+  onRunStatus: (runId: string, st: RunStatus) => void;
   canRun: boolean;
   workflows: WorkflowView[];
   wfId: string;
+  liveAnswer?: string;
 }) {
   const scroller = useRef<HTMLDivElement>(null);
   const inner = useRef<HTMLDivElement>(null);
@@ -386,17 +395,17 @@ function Thread({
         {error ? <ErrorNotice error={error} /> : null}
         {loading ? <div className="muted small">加载对话…</div> : null}
         {empty && !loading && !error && <Welcome samples={samples} onSample={onSample} canRun={canRun} workflows={workflows} wfId={wfId} hasPending={!!pending} />}
-        {conv?.messages.map((m) => <Message key={m.id} m={m} onAsk={onAsk} onRerun={onRerun} canRun={canRun} latestRunId={lastRunId(conv)} />)}
+        {conv?.messages.map((m) => <Message key={m.id} m={m} onAsk={onAsk} onRerun={onRerun} onRunStatus={onRunStatus} canRun={canRun} latestRunId={lastRunId(conv)} />)}
         {pending && (
           <>
             <div className="msg user" data-testid="chat-user-msg">
               <span className="tag">追问</span>
               <div className="msg-text">{pending.text}</div>
             </div>
-            <Typing since={pending.at} />
+            <Typing since={pending.at} thinking={liveAnswer} />
           </>
         )}
-        {awaiting && !pending && <Typing since={conv!.messages[conv!.messages.length - 1].at} />}
+        {awaiting && !pending && <Typing since={conv!.messages[conv!.messages.length - 1].at} thinking={liveAnswer} />}
       </div>
     </div>
   );
@@ -410,16 +419,24 @@ const lastRunId = (c: Conversation) => {
   return undefined;
 };
 
-function Typing({ since }: { since: string }) {
+function Typing({ since, thinking }: { since: string; thinking?: string }) {
   useTicker(true);
   return (
     <div className="msg assistant typing" data-testid="chat-typing">
-      <span className="dots" aria-hidden>
-        <i />
-        <i />
-        <i />
-      </span>
-      正在根据运行结果回答…（{fmtDuration(since, new Date().toISOString())}）
+      <div className="row" style={{ gap: 10 }}>
+        <span className="dots" aria-hidden>
+          <i />
+          <i />
+          <i />
+        </span>
+        {thinking ? '正在思考…' : '正在根据运行结果回答…'}（{fmtDuration(since, new Date().toISOString())}）
+      </div>
+      {thinking && (
+        <div className="thinking-box live" data-testid="chat-answer-thinking-live">
+          {thinking.length > 1500 ? `…${thinking.slice(-1500)}` : thinking}
+          <span className="caret" aria-hidden />
+        </div>
+      )}
     </div>
   );
 }
@@ -469,7 +486,21 @@ function Welcome({ samples, onSample, canRun, workflows, wfId, hasPending }: { s
   );
 }
 
-function Message({ m, onAsk, onRerun, canRun, latestRunId }: { m: ConversationMessage; onAsk: (runId: string) => void; onRerun: (runId: string) => Promise<void>; canRun: boolean; latestRunId?: string }) {
+function Message({
+  m,
+  onAsk,
+  onRerun,
+  onRunStatus,
+  canRun,
+  latestRunId,
+}: {
+  m: ConversationMessage;
+  onAsk: (runId: string) => void;
+  onRerun: (runId: string) => Promise<void>;
+  onRunStatus: (runId: string, st: RunStatus) => void;
+  canRun: boolean;
+  latestRunId?: string;
+}) {
   if (m.role === 'user') {
     return (
       <div className="msg user" data-testid="chat-user-msg">
@@ -489,7 +520,7 @@ function Message({ m, onAsk, onRerun, canRun, latestRunId }: { m: ConversationMe
   if (m.kind === 'run') {
     return (
       <ErrorBoundary label="运行卡片" resetKey={m.runId}>
-        <RunCard runId={m.runId} onAsk={onAsk} onRerun={onRerun} canRerun={canRun} latest={m.runId === latestRunId} />
+        <RunCard runId={m.runId} onAsk={onAsk} onRerun={onRerun} onStatus={onRunStatus} canRerun={canRun} latest={m.runId === latestRunId} />
       </ErrorBoundary>
     );
   }
@@ -497,6 +528,14 @@ function Message({ m, onAsk, onRerun, canRun, latestRunId }: { m: ConversationMe
     return (
       <div className="msg assistant answer" data-testid="chat-answer">
         {m.provider.mode === 'mock' && <span className="badge mock">模拟回答</span>}
+        {m.thinking && (
+          <details className="thinking-box" data-testid="chat-answer-thinking">
+            <summary>
+              <Icon name="thinking" /> 思考过程（{m.thinking.length.toLocaleString()} 字）
+            </summary>
+            <div className="thinking-full">{m.thinking}</div>
+          </details>
+        )}
         <ErrorBoundary label="回答" resetKey={m.id}>
           <div className="doc">
             <SafeMarkdown>{m.text}</SafeMarkdown>
@@ -612,10 +651,47 @@ function NodeChips({ run, log }: { run: Run; log: RunLogEntry[] }) {
   );
 }
 
-function RunCard({ runId, onAsk, onRerun, canRerun, latest }: { runId: string; onAsk: (runId: string) => void; onRerun: (runId: string) => Promise<void>; canRerun: boolean; latest: boolean }) {
-  const { run, error, refreshError, live, active } = useRunLive(runId);
+/** Reasoning streaming in right now, under the live log of a run card ("深度思考"). */
+function LiveThinkingLines({ run, thinking }: { run: Run; thinking: LiveThinking }) {
+  const items = Object.entries(thinking).filter(([, t]) => t.text);
+  if (!items.length) return null;
+  return (
+    <div className="rc-thinking" data-testid="chat-run-thinking">
+      {items.map(([nodeId, t]) => (
+        <div key={nodeId} className="thinking-box live">
+          <div className="small muted">
+            <Icon name="thinking" size={13} /> 「{run.nodes[nodeId]?.name ?? nodeId}」{t.agent === 'verifier' ? '核验代理' : ''}思考中
+          </div>
+          {t.text.length > 900 ? `…${t.text.slice(-900)}` : t.text}
+          <span className="caret" aria-hidden />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function RunCard({
+  runId,
+  onAsk,
+  onRerun,
+  onStatus,
+  canRerun,
+  latest,
+}: {
+  runId: string;
+  onAsk: (runId: string) => void;
+  onRerun: (runId: string) => Promise<void>;
+  onStatus?: (runId: string, st: RunStatus) => void;
+  canRerun: boolean;
+  latest: boolean;
+}) {
+  const { run, error, refreshError, live, thinking, active, reload } = useRunLive(runId);
   const toast = useToast();
   const { me } = useAuth();
+  const status = run?.status;
+  useEffect(() => {
+    if (status) onStatus?.(runId, status);
+  }, [runId, status, onStatus]);
   const [expanded, setExpanded] = useState(false);
   const [showAll, setShowAll] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -637,7 +713,7 @@ function RunCard({ runId, onAsk, onRerun, canRerun, latest }: { runId: string; o
 
   if (!run) {
     return (
-      <div className="run-card" data-testid="chat-run-card">
+      <div className="run-card" data-testid="chat-run-card" data-run-id={runId} data-status="loading">
         {error ? <ErrorNotice error={error} title={`无法加载运行 ${runId}`} /> : <span className="muted small">正在加载运行 {runId}…</span>}
       </div>
     );
@@ -663,6 +739,20 @@ function RunCard({ runId, onAsk, onRerun, canRerun, latest }: { runId: string; o
       setBusy(false);
     }
   }
+
+  async function stop() {
+    setBusy(true);
+    try {
+      await api.runs.cancel(run!.id);
+      toast('已停止运行');
+      reload();
+    } catch (e) {
+      toast((e as Error).message, 'error');
+    } finally {
+      setBusy(false);
+    }
+  }
+  const canStop = active && (run.startedBy === me.user.id || me.user.role === 'admin');
 
   return (
     <div className={`run-card st-${run.status}`} data-testid="chat-run-card" data-run-id={run.id} data-status={run.status}>
@@ -693,6 +783,7 @@ function RunCard({ runId, onAsk, onRerun, canRerun, latest }: { runId: string; o
             {waitingNode ? `暂停：等待审批「${waitingNode.name}」` : runningNodes.length ? `正在执行：${runningNodes.map((n) => `「${n.name}」`).join('、')}` : '排队中…'}
           </div>
           <LogLines log={showAll ? log : log.slice(-6)} t0={t0} testId="chat-run-log" />
+          <LiveThinkingLines run={run} thinking={thinking} />
           {log.length > 6 && (
             <button type="button" className="linkish small" onClick={() => setShowAll((x) => !x)}>
               {showAll ? '只看最新' : `查看全部 ${log.length} 条`}
@@ -744,9 +835,17 @@ function RunCard({ runId, onAsk, onRerun, canRerun, latest }: { runId: string; o
         </div>
       )}
 
-      {(run.status === 'failed' || run.status === 'rejected') && (
+      {(run.status === 'failed' || run.status === 'rejected' || run.status === 'canceled') && (
         <div data-testid="chat-run-failed">
-          {run.error ? <ErrorNotice error={run.error} /> : <div className="notice error small">运行在审批节点被驳回，没有最终结果。</div>}
+          {run.status === 'canceled' ? (
+            <div className="notice warn small" data-testid="chat-run-canceled">
+              运行已{run.canceled ? `由 ${run.canceled.byName} ` : ''}手动停止。已完成节点的结果保留，可在完整运行页“从停止处继续”。
+            </div>
+          ) : run.error ? (
+            <ErrorNotice error={run.error} />
+          ) : (
+            <div className="notice error small">运行在审批节点被驳回，没有最终结果。</div>
+          )}
           {done.length > 0 && (
             <div className="small" style={{ marginTop: 6 }}>
               已完成节点的结果仍可查看：
@@ -770,6 +869,11 @@ function RunCard({ runId, onAsk, onRerun, canRerun, latest }: { runId: string; o
       )}
 
       <div className="rc-actions">
+        {canStop && (
+          <button className="sm danger" onClick={stop} disabled={busy || !!run.canceled} data-testid="chat-stop-run">
+            <Icon name="stop" size={12} /> {run.canceled ? '正在停止…' : '停止运行'}
+          </button>
+        )}
         <Link className="btn sm" to={`/runs/${run.id}`}>
           查看完整运行
         </Link>
@@ -815,6 +919,12 @@ function Composer({
   onSend,
   focusTick,
   busy,
+  thinking,
+  thinkingAllowed,
+  setThinking,
+  stopTarget,
+  stopping,
+  onStop,
 }: {
   convId?: string;
   draft: Draft;
@@ -831,6 +941,13 @@ function Composer({
   onSend: (p: { mode: ChatMode; text: string; atts: DocumentSummary[]; params: Record<string, string> }) => Promise<void>;
   focusTick: number;
   busy: boolean;
+  thinking: boolean;
+  thinkingAllowed: boolean;
+  setThinking: (on: boolean) => void;
+  /** What the send button stops right now ("停止" replaces "发送"). */
+  stopTarget?: 'answer' | 'run';
+  stopping: boolean;
+  onStop: () => void;
 }) {
   const [sending, setSending] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -876,7 +993,7 @@ function Composer({
 
   const can = mode === 'ask' ? !!draft.text.trim() && canAsk : (!!draft.text.trim() || draft.atts.length > 0) && !!wf;
   async function submit() {
-    if (!can || sending || busy || uploading) return;
+    if (stopTarget || !can || sending || busy || uploading) return;
     setSending(true);
     setError(undefined);
     const snapshot = draft;
@@ -952,6 +1069,21 @@ function Composer({
             追问对象：运行 {askRun ?? '—'}（回答只依据该次运行的结果、原始材料和规则包）
           </span>
         )}
+        <button
+          type="button"
+          className={`pill ${thinkingAllowed && thinking ? 'on' : ''}`}
+          aria-pressed={thinkingAllowed && thinking}
+          disabled={!thinkingAllowed}
+          onClick={() => setThinking(!thinking)}
+          title={
+            thinkingAllowed
+              ? '深度思考：在运行过程和回答中实时打印模型的思考过程（开启后对之后发起的运行和追问生效）'
+              : '思考过程可能复述任务说明，仅创建者、审核人和管理员可查看；或当前模型未开启思考模式'
+          }
+          data-testid="chat-thinking"
+        >
+          <Icon name="thinking" size={14} /> 深度思考
+        </button>
       </div>
 
       {mode === 'run' && showParams && extra.length > 0 && (
@@ -995,7 +1127,7 @@ function Composer({
         {mode === 'run' && (
           <>
             <button type="button" className="ghost attach" onClick={() => fileRef.current?.click()} disabled={uploading || !hasDocInput} title={hasDocInput ? '上传 PDF / Word / 图片 / TXT（≤ 20MB，可拖入）' : '该工作流没有材料文件输入'} aria-label="上传材料" data-testid="chat-attach">
-              {uploading ? '…' : '📎'}
+              {uploading ? '…' : <Icon name="attach" size={18} />}
             </button>
             <input
               ref={fileRef}
@@ -1022,13 +1154,30 @@ function Composer({
               submit();
             }
           }}
-          placeholder={mode === 'run' ? (draft.atts.length ? '补充说明（可选），Enter 发送' : '粘贴材料文字，或点 📎 上传文件；Enter 发送，Shift+Enter 换行') : '就这次结果提问，例如：第 2 条为什么属于高风险？'}
+          placeholder={mode === 'run' ? (draft.atts.length ? '补充说明（可选），Enter 发送' : '粘贴材料文字，或点左侧回形针上传文件；Enter 发送，Shift+Enter 换行') : '就这次结果提问，例如：第 2 条为什么属于高风险？'}
           aria-label={mode === 'run' ? '材料或说明' : '追问内容'}
           data-testid="chat-input"
         />
-        <button type="button" className="primary send" onClick={submit} disabled={!can || sending || busy || uploading} data-testid="chat-send">
-          {sending ? (mode === 'ask' ? '回答中…' : '启动中…') : '发送'}
-        </button>
+        {stopTarget ? (
+          <button
+            type="button"
+            className="send stop"
+            onClick={onStop}
+            disabled={stopping}
+            title={stopTarget === 'answer' ? '停止生成这条回答' : '停止正在执行的工作流（已完成节点的结果保留）'}
+            data-testid="chat-stop"
+          >
+            <Icon name="stop" size={12} /> {stopping ? '正在停止…' : stopTarget === 'answer' ? '停止回答' : '停止运行'}
+          </button>
+        ) : (
+          <button type="button" className="primary send" onClick={submit} disabled={!can || sending || busy || uploading} data-testid="chat-send">
+            {sending ? '启动中…' : (
+              <>
+                发送 <Icon name="send" size={14} />
+              </>
+            )}
+          </button>
+        )}
       </div>
       {error ? <ErrorNotice error={error} /> : null}
       <div className="composer-hint small muted">

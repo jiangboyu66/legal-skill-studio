@@ -45,6 +45,10 @@ export interface CompletionRequest {
   maxTokens: number;
   wantJson?: boolean;
   hints?: MockHints;
+  /** Receives the model's reasoning as it streams ("深度思考"); providers that cannot stream call it never. */
+  onThinking?: (delta: string) => void;
+  /** Aborts the request when the run is stopped. */
+  signal?: AbortSignal;
 }
 
 export interface CompletionResult {
@@ -55,6 +59,8 @@ export interface CompletionResult {
   usage?: Usage;
   /** 'end' | 'tool_use' | 'max_tokens' | 'refusal' | provider-specific */
   stopReason: string;
+  /** The model's reasoning text for this call (DeepSeek reasoning_content, Claude thinking), if any. */
+  reasoning?: string;
 }
 
 export interface ProviderCapabilities {

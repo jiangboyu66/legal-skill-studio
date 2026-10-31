@@ -647,15 +647,17 @@ function assert(cond, msg) {
     const runner = await as('runner');
     await runner.goto(`${BASE}/`);
     await runner.waitForSelector('[data-testid=chat-welcome]');
-    assert(await runner.isVisible('[data-testid=nav-chat]'), '左侧导航应有“对话”');
+    assert(await runner.isVisible('nav.side [data-testid=chat-new]'), '左侧功能栏应有“新对话”');
+    assert(await runner.$('nav.side [data-testid=chat-list]'), '对话列表应合并在左侧功能栏');
     for (const sel of ['nav a[href="/workflows"]', 'nav a[href="/skills"]', 'nav a[href="/runs"]', 'nav a[href="/documents"]']) assert(await runner.$(sel), `左侧功能应保留：${sel}`);
     await shot(runner, 'ui-28-chat-home');
     await runner.click('[data-testid=chat-sample-sample_low_post]');
     await runner.waitForFunction(() => document.querySelector('[data-testid=chat-input]').value.length > 50);
     await runner.click('[data-testid=chat-send]');
     await runner.waitForURL(/\/chat\/conv_/);
-    await runner.waitForSelector('[data-testid=chat-run-card]');
+    await runner.waitForSelector('[data-testid=chat-run-card][data-run-id]');
     chatRunId = await runner.getAttribute('[data-testid=chat-run-card]', 'data-run-id');
+    assert(/^run_/.test(chatRunId || ''), `run id ${chatRunId}`);
     // progress lines appear while the run is still going
     await runner.waitForFunction(() => {
       const card = document.querySelector('[data-testid=chat-run-card]');
@@ -733,7 +735,7 @@ function assert(cond, msg) {
     await t1.click('[data-testid=chat-sample-sample_high_edm]');
     await t1.waitForFunction(() => document.querySelector('[data-testid=chat-input]').value.length > 50);
     await t1.click('[data-testid=chat-send]');
-    await t1.waitForSelector('[data-testid=chat-run-card]');
+    await t1.waitForSelector('[data-testid=chat-run-card][data-run-id]');
     const runId = await t1.getAttribute('[data-testid=chat-run-card]', 'data-run-id');
     // tab 2 of the same browser: starts signed in (own session), then switches to the second reviewer
     const t2 = await ctx.newPage();
@@ -759,6 +761,67 @@ function assert(cond, msg) {
     assert((await t1.textContent('.me-name')).includes('使用'), '标签页 1 仍应是使用者');
     await ctx.close();
     return '标签页 2 退出并改用审核人登录、批准审批节点；标签页 1 仍是使用者，运行完成后结果一直显示（v3.1 中此时会变成“运行记录不存在”）';
+  });
+
+  await scenario('24. 深度思考：开启后运行过程与追问实时打印模型思考；使用者不可开启', async () => {
+    const b = await as('builder');
+    await b.goto(`${BASE}/`);
+    await b.waitForSelector('[data-testid=chat-welcome]');
+    if ((await b.getAttribute('[data-testid=chat-thinking]', 'aria-pressed')) !== 'true') await b.click('[data-testid=chat-thinking]');
+    await b.click('[data-testid=chat-sample-sample_low_post]');
+    await b.waitForFunction(() => document.querySelector('[data-testid=chat-input]').value.length > 50);
+    await b.click('[data-testid=chat-send]');
+    await b.waitForSelector('[data-testid=chat-run-thinking]', { timeout: LONG });
+    const live = await b.textContent('[data-testid=chat-run-thinking]');
+    await shot(b, 'ui-35-thinking-live');
+    await b.waitForSelector('[data-testid=chat-run-card][data-status=succeeded]', { timeout: LONG });
+    await b.click('[data-testid=chat-run-process] summary');
+    const stored = await b.$$eval('[data-testid=chat-run-log-all] li.k-thinking', (x) => x.length);
+    assert(stored > 0, '运行记录中应保存思考过程');
+    await b.click('[data-testid=chat-ask]');
+    await b.fill('[data-testid=chat-input]', '为什么判定为低风险？');
+    await b.keyboard.press('Enter');
+    await b.waitForSelector('[data-testid=chat-answer-thinking]', { timeout: LONG });
+    await b.click('[data-testid=chat-answer-thinking] summary');
+    await shot(b, 'ui-36-thinking-answer');
+    const runId = await b.getAttribute('[data-testid=chat-run-card]', 'data-run-id');
+    await b.goto(`${BASE}/runs/${runId}`);
+    await b.waitForSelector('[data-testid=thinking-on]');
+    await b.click('[data-testid=view-check]');
+    await b.click('[data-testid=node-tab-process]');
+    await b.waitForSelector('[data-testid=node-panel-check] [data-testid=thinking-entry]');
+    const runner = await as('runner');
+    await runner.goto(`${BASE}/`);
+    assert(await runner.isDisabled('[data-testid=chat-thinking]'), '使用者不应能开启深度思考');
+    return `运行中实时打印思考（“${live.replace(/\s+/g, ' ').slice(0, 30)}…”），保存 ${stored} 条思考记录；追问回答附思考过程；节点“AI 过程”可查看；使用者不可开启`;
+  });
+
+  await scenario('25. 停止：发送按钮在运行中变为“停止运行”，停止后可从停止处继续', async () => {
+    const runner = await as('runner');
+    await runner.click('[data-testid=chat-new]');
+    await runner.waitForSelector('[data-testid=chat-welcome]');
+    await runner.click('[data-testid=chat-sample-sample_high_edm]');
+    await runner.waitForFunction(() => document.querySelector('[data-testid=chat-input]').value.length > 50);
+    await runner.click('[data-testid=chat-send]');
+    await runner.waitForSelector('[data-testid=chat-stop]', { timeout: LONG });
+    assert(!(await runner.$('[data-testid=chat-send]')), '运行中发送按钮应变为停止按钮');
+    await shot(runner, 'ui-37-stop-button');
+    await runner.click('[data-testid=chat-stop]');
+    await runner.waitForSelector('[data-testid=chat-run-card][data-status=canceled]', { timeout: LONG });
+    await runner.waitForSelector('[data-testid=chat-send]');
+    await runner.waitForSelector('[data-testid=chat-run-canceled]');
+    const runId = await runner.getAttribute('[data-testid=chat-run-card]', 'data-run-id');
+    const stopped = await api(runner, 'GET', `/api/runs/${runId}`);
+    const skipped = Object.values(stopped.nodes).filter((n) => n.skipReason === '运行已停止').length;
+    await runner.goto(`${BASE}/runs/${runId}`);
+    await runner.waitForSelector('[data-testid=run-canceled]');
+    assert((await runner.textContent('[data-testid=retry]')).includes('从停止处继续'), '应提供“从停止处继续”');
+    await shot(runner, 'ui-38-run-stopped', true);
+    await runner.click('[data-testid=retry]');
+    await runner.waitForURL((u) => !u.toString().endsWith(runId) && /\/runs\/run_/.test(u.toString()));
+    const st = await waitRunStatus(runner, ['waiting_approval', 'succeeded', 'failed']);
+    assert(st !== 'failed', st);
+    return `停止后运行为“已停止”，${skipped} 个未完成节点标为“运行已停止”，已完成节点保留；“从停止处继续”后运行到 ${st}`;
   });
 
   await browser.close();

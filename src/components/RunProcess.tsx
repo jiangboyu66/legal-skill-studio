@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { NodeStatus, Run, RunLogEntry } from '../../shared/types';
+import type { LiveThinking } from './runLive';
 import { StatusBadge } from './ui';
 
-const ICON: Record<RunLogEntry['kind'], string> = { run: '▶', node: '●', model: '…', tool: '🔧', result: '↩', approval: '✋', note: 'ℹ', error: '⚠' };
+const ICON: Record<RunLogEntry['kind'], string> = { run: '▶', node: '●', model: '…', thinking: '💭', tool: '🔧', result: '↩', approval: '✋', note: 'ℹ', error: '⚠' };
 const KEY_KINDS: RunLogEntry['kind'][] = ['run', 'node', 'approval', 'error'];
 
 const pad = (n: number) => String(n).padStart(2, '0');
@@ -199,6 +200,7 @@ export function RunProcess({
   onPickNode,
   onHoverNode,
   defaultOpen,
+  thinking = {},
 }: {
   run: Run;
   log: RunLogEntry[];
@@ -208,6 +210,8 @@ export function RunProcess({
   onPickNode?: (id: string) => void;
   onHoverNode?: (id?: string) => void;
   defaultOpen: boolean;
+  /** Reasoning streaming in right now ("深度思考"). */
+  thinking?: LiveThinking;
 }) {
   const [open, setOpen] = useState(defaultOpen);
   const [nodeFilter, setNodeFilter] = useState('');
@@ -226,6 +230,8 @@ export function RunProcess({
     return log.filter((e, i) => i <= limit && (!nodeFilter || e.nodeId === nodeFilter) && (!keyOnly || KEY_KINDS.includes(e.kind)));
   }, [log, replay.on, replay.pos, nodeFilter, keyOnly]);
   const hidden = replay.on ? log.length - 1 - replay.pos : 0;
+  const liveThinking = replay.on ? [] : Object.entries(thinking).filter(([id, t]) => t.text && (!nodeFilter || id === nodeFilter));
+  const thinkingSize = liveThinking.reduce((n, [, t]) => n + t.text.length, 0);
 
   // Live: stick to the newest line unless the reader scrolled up. Replay: keep the current step in view.
   useLayoutEffect(() => {
@@ -235,7 +241,7 @@ export function RunProcess({
       const cur = el.querySelector<HTMLElement>('li.cur');
       if (cur && (cur.offsetTop < el.scrollTop || cur.offsetTop + cur.offsetHeight > el.scrollTop + el.clientHeight)) el.scrollTop = cur.offsetTop - el.clientHeight / 2;
     } else if (follow) el.scrollTop = el.scrollHeight;
-  }, [shown.length, open, replay.on, replay.pos, follow]);
+  }, [shown.length, open, replay.on, replay.pos, follow, thinkingSize]);
 
   const end = run.finishedAt ? Date.parse(run.finishedAt) : undefined;
   const total = end && t0 ? `总用时 ${secs(end - t0)} s` : '';
@@ -346,6 +352,24 @@ export function RunProcess({
             );
           })}
           {hidden > 0 && <li className="muted small">…之后还有 {hidden} 条（继续播放或拖动进度条查看）</li>}
+          {liveThinking.map(([id, t]) => (
+            <li key={`thinking-${id}`} className="k-thinking live" data-testid="live-thinking">
+              <span className="t">思考中</span>
+              <span className="i" aria-hidden>
+                💭
+              </span>
+              <span className="x">
+                {run.nodes[id] && (
+                  <button type="button" className="node-chip" onClick={() => onPickNode?.(id)}>
+                    {run.nodes[id].name}
+                  </button>
+                )}
+                {t.agent === 'verifier' ? '核验代理：' : ''}
+                <span className="thinking-live">{t.text.length > 1200 ? `…${t.text.slice(-1200)}` : t.text}</span>
+                <span className="caret" aria-hidden />
+              </span>
+            </li>
+          ))}
         </ol>
       )}
       {open && !follow && !replay.on && active && (

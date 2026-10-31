@@ -375,7 +375,28 @@ export function SecurityNotes({ s }: { s?: SecurityReport }) {
   );
 }
 
-const ENTRY_ICON: Record<TranscriptEntry['type'], string> = { assistant_text: '💬', tool_call: '🔧', tool_result: '↩', permission: '🔒', hook: '🪝', note: 'ℹ' };
+const ENTRY_ICON: Record<TranscriptEntry['type'], string> = { assistant_text: '💬', tool_call: '🔧', tool_result: '↩', permission: '🔒', hook: '🪝', note: 'ℹ', thinking: '💭' };
+
+/** The model's reasoning ("深度思考"), folded when long. */
+export function ThinkingText({ text, label = '思考过程' }: { text: string; label?: string }) {
+  const long = text.length > 280;
+  return (
+    <span className="te-text thinking" data-testid="thinking-entry">
+      {long ? (
+        <details>
+          <summary>
+            {label}：{text.slice(0, 120).replace(/\s+/g, ' ')}…
+          </summary>
+          <span className="thinking-full">{text}</span>
+        </details>
+      ) : (
+        <>
+          {label}：{text}
+        </>
+      )}
+    </span>
+  );
+}
 
 /** The agent's working record: model text, tool calls and results, permission decisions, hook notes. */
 export function Transcript({ entries }: { entries?: TranscriptEntry[] }) {
@@ -411,6 +432,7 @@ export function Transcript({ entries }: { entries?: TranscriptEntry[] }) {
             </span>
           )}
           {e.type === 'note' && <span className="te-text">{e.message}</span>}
+          {e.type === 'thinking' && <ThinkingText text={e.text} label={e.agent === 'verifier' ? '核验代理的思考' : '思考过程'} />}
         </li>
       ))}
     </ol>

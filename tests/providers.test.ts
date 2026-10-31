@@ -18,7 +18,7 @@ import { AnthropicProvider } from '../server/services/llm/anthropic';
 import { OpenAICompatibleProvider } from '../server/services/llm/openai';
 import type { CompletionRequest, LLMProvider } from '../server/services/llm/types';
 
-type Reply = { status: number; body: unknown; headers?: Record<string, string>; delayMs?: number };
+type Reply = { status: number; body: unknown; headers?: Record<string, string>; delayMs?: number; sse?: string[]; hang?: boolean };
 let queue: Reply[] = [];
 let seen: { url: string; headers: http.IncomingHttpHeaders; body: Record<string, any> }[] = [];
 let server: http.Server;
@@ -31,6 +31,19 @@ beforeAll(async () => {
     req.on('end', () => {
       seen.push({ url: req.url ?? '', headers: req.headers, body: raw ? JSON.parse(raw) : {} });
       const r = queue.shift() ?? { status: 500, body: { error: { message: 'no reply queued' } } };
+      if (r.hang) return; // never answers (abort / timeout tests)
+      if (r.sse) {
+        res.writeHead(r.status, { 'content-type': 'text/event-stream' });
+        const parts = [...r.sse];
+        const next = () => {
+          const part = parts.shift();
+          if (part === undefined) return res.end();
+          res.write(part);
+          setTimeout(next, 5);
+        };
+        next();
+        return;
+      }
       setTimeout(() => {
         res.writeHead(r.status, { 'content-type': 'application/json', ...(r.headers ?? {}) });
         res.end(JSON.stringify(r.body));
@@ -342,5 +355,82 @@ describe('retry helper', () => {
     const e = await completeWithRetry(broken, req, { maxRetries: 2, baseMs: 1 }).catch((x) => x as AppError);
     expect(e).toMatchObject({ code: 'PROVIDER_AUTH', attempts: 1 });
     expect(m).toBe(1);
+  });
+});
+
+describe('DeepSeek streaming for "深度思考" (reasoning printed while the model thinks)', () => {
+  const deepseek = () =>
+    new OpenAICompatibleProvider({
+      apiKey: 'sk-ds',
+      model: 'deepseek-flash',
+      baseUrl: `${base}/v1`,
+      jsonMode: false,
+      maxTokens: 0,
+      tools: true,
+      vision: false,
+      timeoutMs: 2000,
+      name: 'deepseek',
+      label: 'DeepSeek',
+      keyEnvName: 'DEEPSEEK_API_KEY',
+      extraBody: { thinking: { type: 'enabled' } },
+      thinking: true,
+    });
+  const chunk = (o: unknown) => `data: ${JSON.stringify(o)}\n\n`;
+  const toolStream = () => [
+    ': keep-alive\n\n',
+    chunk({ model: 'deepseek-flash', choices: [{ index: 0, delta: { role: 'assistant', content: '', reasoning_content: '先看' }, finish_reason: null }], usage: null }),
+    chunk({ choices: [{ index: 0, delta: { reasoning_content: '规则全文。' }, finish_reason: null }] }),
+    chunk({ choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: 'call_1', type: 'function', function: { name: 'lookup_rule', arguments: '' } }] }, finish_reason: null }] }),
+    chunk({ choices: [{ index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: '{"rule_ids":' } }] }, finish_reason: null }] }),
+    chunk({ choices: [{ index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: '["SCAP-01"]}' } }] }, finish_reason: null }] }),
+    chunk({ choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }], usage: { prompt_tokens: 100, completion_tokens: 20, prompt_cache_hit_tokens: 60 } }),
+    'data: [DONE]\n\n',
+  ];
+
+  it('streams reasoning deltas to the caller and assembles tool calls, usage and the reasoning for replay', async () => {
+    queue.push({ status: 200, body: null, sse: toolStream() });
+    const deltas: string[] = [];
+    const r = await deepseek().complete({ ...req, onThinking: (d) => deltas.push(d) });
+    expect(seen[0].body).toMatchObject({ stream: true, stream_options: { include_usage: true }, thinking: { type: 'enabled' } });
+    expect(deltas).toEqual(['先看', '规则全文。']);
+    expect(r.reasoning).toBe('先看规则全文。');
+    expect(r.raw).toEqual({ reasoning_content: '先看规则全文。' }); // replayed on the next turn (tools in use)
+    expect(r.content).toEqual([{ type: 'tool_use', id: 'call_1', name: 'lookup_rule', input: { rule_ids: ['SCAP-01'] } }]);
+    expect(r.stopReason).toBe('tool_use');
+    expect(r.usage).toMatchObject({ inputTokens: 40, outputTokens: 20, cacheReadTokens: 60 });
+  });
+
+  it('uses one plain request when nobody watches the reasoning, and still returns it', async () => {
+    queue.push({ status: 200, body: { model: 'deepseek-flash', choices: [{ message: { content: 'ok', reasoning_content: '想法' }, finish_reason: 'stop' }] } });
+    const r = await deepseek().complete(req);
+    expect(seen[0].body.stream).toBeUndefined();
+    expect(r.reasoning).toBe('想法');
+  });
+
+  it('drops stream_options (or streaming) when an endpoint rejects them, and reports a cut-off stream as retryable', async () => {
+    queue.push({ status: 400, body: { error: { message: 'Unrecognized request argument supplied: stream_options' } } });
+    queue.push({ status: 200, body: null, sse: toolStream() });
+    const p = deepseek();
+    await p.complete({ ...req, onThinking: () => undefined });
+    expect(seen[1].body.stream).toBe(true);
+    expect(seen[1].body.stream_options).toBeUndefined();
+
+    queue.push({ status: 200, body: null, sse: [chunk({ choices: [{ index: 0, delta: { reasoning_content: '一半' }, finish_reason: null }] })] });
+    const err = await p.complete({ ...req, onThinking: () => undefined }).catch((e) => e);
+    expect(err).toBeInstanceOf(AppError);
+    expect(err).toMatchObject({ code: 'PROVIDER_NETWORK', retryable: true });
+  });
+
+  it('stops at once when the run is stopped — reported as RUN_CANCELED and never retried', async () => {
+    const p = deepseek();
+    for (const onThinking of [undefined, () => undefined]) {
+      queue.push({ status: 200, body: null, hang: true });
+      const ctl = new AbortController();
+      const started = Date.now();
+      setTimeout(() => ctl.abort(), 60);
+      const err = await completeWithRetry(p, { ...req, onThinking, signal: ctl.signal }, { maxRetries: 3, baseMs: 1 }).catch((e) => e);
+      expect(err).toMatchObject({ code: 'RUN_CANCELED' });
+      expect(Date.now() - started).toBeLessThan(1500); // not the 2 s timeout
+    }
   });
 });

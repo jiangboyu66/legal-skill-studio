@@ -311,7 +311,7 @@ export class Db {
    * Documents still referenced by a remaining run are kept. Returns what was removed (ids per org).
    */
   purgeBefore(cutoffIso: string): { runs: { id: string; orgId: string }[]; documents: { id: string; orgId: string }[]; evals: number } {
-    const terminal = ['succeeded', 'failed', 'rejected'];
+    const terminal = ['succeeded', 'failed', 'rejected', 'canceled'];
     const runs = this.db
       .prepare(`SELECT id, org_id FROM runs WHERE created_at < ? AND status IN (${terminal.map(() => '?').join(',')})`)
       .all(cutoffIso, ...terminal)

@@ -2,7 +2,17 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { NodeRun, NodeStatus, Run, RunEvent, RunLogEntry, RunStatus } from '../../shared/types';
 import { api, ApiError, streamRunEvents } from '../api';
 
-export const TERMINAL: RunStatus[] = ['succeeded', 'failed', 'rejected'];
+export const TERMINAL: RunStatus[] = ['succeeded', 'failed', 'rejected', 'canceled'];
+
+/** Reasoning text streaming in right now, per node ("深度思考"); replaced by the stored entry when complete. */
+export type LiveThinking = Record<string, { key: string; text: string; agent?: string }>;
+
+/** Applies a streamed reasoning chunk (a new key starts a new model call or retry). */
+export function applyThinking(cur: LiveThinking, e: Extract<RunEvent, { type: 'thinking_delta' }>): LiveThinking {
+  const prev = cur[e.nodeId];
+  const text = prev && prev.key === e.key ? prev.text + e.text : e.text;
+  return { ...cur, [e.nodeId]: { key: e.key, text: text.length > 12_000 ? `…${text.slice(-12_000)}` : text, agent: e.agent } };
+}
 export const isTerminal = (s?: string) => !!s && (TERMINAL as string[]).includes(s);
 
 /** Merges two activity logs by sequence number (later copies win). */
@@ -60,6 +70,8 @@ export interface RunLiveState {
   refreshError: unknown;
   /** The event stream is connected. */
   live: boolean;
+  /** Reasoning streaming in right now, per node. */
+  thinking: LiveThinking;
   active: boolean;
   reload: () => void;
   setRun: (fn: (r: Run | null) => Run | null) => void;
@@ -75,6 +87,7 @@ export function useRunLive(runId: string | undefined): RunLiveState {
   const [error, setError] = useState<unknown>();
   const [refreshError, setRefreshError] = useState<unknown>();
   const [live, setLive] = useState(false);
+  const [thinking, setThinking] = useState<LiveThinking>({});
   const runRef = useRef<Run | null>(null);
   const idRef = useRef(runId);
   idRef.current = runId;
@@ -142,6 +155,7 @@ export function useRunLive(runId: string | undefined): RunLiveState {
   useEffect(() => {
     runRef.current = null;
     setRunState(null);
+    setThinking({});
     setError(undefined);
     setRefreshError(undefined);
     inFlight.current = false;
@@ -170,6 +184,21 @@ export function useRunLive(runId: string | undefined): RunLiveState {
         soon(true); // catch up with anything that happened before the stream opened
       },
       onEvent: (e) => {
+        if (e.runId !== runId) return;
+        if (e.type === 'thinking_delta') {
+          setThinking((cur) => applyThinking(cur, e));
+          return;
+        }
+        // the complete reasoning of a call was recorded, or the node moved on: drop the live text
+        if ((e.type === 'transcript' && e.entry.type === 'thinking') || (e.type === 'node_status' && e.status !== 'running')) {
+          const nodeId = e.nodeId;
+          setThinking((cur) => {
+            if (!cur[nodeId]) return cur;
+            const next = { ...cur };
+            delete next[nodeId];
+            return next;
+          });
+        }
         if (e.type === 'log' || e.type === 'transcript') setRun((r) => (r && r.id === e.runId ? applyEvent(r, e) : r));
         // status changes: reload right away (throttled while many arrive)
         if (e.type === 'run_status' || e.type === 'approval_requested' || e.type === 'approval_decided') soon(true);
@@ -191,6 +220,10 @@ export function useRunLive(runId: string | undefined): RunLiveState {
     };
   }, [runId, active, waiting, soon, setRun]);
 
+  useEffect(() => {
+    if (!active) setThinking({});
+  }, [active]);
+
   // Final reload once the run has finished, so the complete result (outputs, usage) is shown.
   const wasActive = useRef(false);
   useEffect(() => {
@@ -201,7 +234,7 @@ export function useRunLive(runId: string | undefined): RunLiveState {
     }
   }, [active, run, soon]);
 
-  return { run, error, refreshError, live, active, reload: () => soon(true), setRun };
+  return { run, error, refreshError, live, thinking, active, reload: () => soon(true), setRun };
 }
 
 /** Re-renders every `ms` while `on` (elapsed time displays). */

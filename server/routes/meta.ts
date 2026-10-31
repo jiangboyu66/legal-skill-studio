@@ -11,7 +11,7 @@ import { Errors } from '../errors';
 import { h, param, who } from './util';
 
 /** Keep in step with package.json (a test checks this). */
-export const APP_VERSION = '3.2.0';
+export const APP_VERSION = '3.3.0';
 const FILES_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'seed', 'files');
 
 export function metaRouter(ctx: AppContext) {

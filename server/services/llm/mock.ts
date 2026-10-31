@@ -1,8 +1,37 @@
 import type { OutputField } from '../../../shared/types';
-import { AppError } from '../../errors';
+import { AppError, Errors } from '../../errors';
 import type { Block, CompletionRequest, CompletionResult, LLMProvider, MockHints } from './types';
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+/** Waits, but stops at once (RUN_CANCELED) when the run is stopped. */
+const sleep = (ms: number, signal?: AbortSignal) =>
+  new Promise<void>((resolve, reject) => {
+    if (signal?.aborted) return reject(Errors.canceled());
+    const t = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(t);
+      reject(Errors.canceled());
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+
+/** Simulated reasoning for "深度思考" in mock mode — labelled, generic, derived from the request only. */
+function mockThinking(h: MockHints | undefined, turn: number, keyword: string): string {
+  if (!h) return '（模拟思考）没有上下文。';
+  if (h.agentType === 'result-qa') {
+    const q = (h.inputs.question ?? '').replace(/\s+/g, ' ').slice(0, 60);
+    return `（模拟思考，非真实模型）用户问的是“${q}”。先看运行结果里的问题清单、结论核验和人工复核记录，再判断需不需要回到原文核对；只依据这些内容回答，拿不准就直说。`;
+  }
+  if (h.agentType === 'verifier') {
+    return '（模拟思考，非真实模型）逐条核对：引用的规则是否存在、是否适用于这个投放渠道；引文是不是原文；结论有没有超出规则本身的要求，或者依赖材料里没有的事实。';
+  }
+  if (turn === 0) {
+    return `（模拟思考，非真实模型）这一步是「${h.skillName}」。先通读材料，找出可能触发规则的表述${keyword ? `，例如“${keyword}”` : ''}；有把握之前先查规则全文或在材料里搜索原句，最后按要求的结构提交结果。`;
+  }
+  return '（模拟思考，非真实模型）工具结果已经返回，信息够了；按输出要求整理结果并提交。';
+}
 
 /** Phrases that typically trigger marketing-compliance issues; used only to make mock output plausible. */
 const RED_FLAG = /\b(no\.?\s?1|best|guarantee[sd]?|clinically|cure[sd]?|risk-free|today only|lifetime|nric|free|100%|was \$)/i;
@@ -162,7 +191,7 @@ function mockOptimizerCandidate(h: MockHints): Record<string, unknown> {
   };
 }
 
-const STATUS_ZH: Record<string, string> = { succeeded: '已完成', failed: '失败', rejected: '在审批节点被驳回', running: '运行中', waiting_approval: '等待审批', queued: '排队中' };
+const STATUS_ZH: Record<string, string> = { succeeded: '已完成', failed: '失败', rejected: '在审批节点被驳回', canceled: '已手动停止', running: '运行中', waiting_approval: '等待审批', queued: '排队中' };
 
 /**
  * Mock "result-qa" (chat follow-up): restates the run result the agent was given, so the chat flow can be
@@ -234,14 +263,27 @@ function appendToFirstString(v: unknown, extra: string): boolean {
  * exploratory tool call (rule lookup or document search) and then submits its output via submit_output.
  */
 export class MockProvider implements LLMProvider {
-  info = { name: 'mock' as const, model: 'mock-legal-v2', mode: 'mock' as const, vision: false };
   capabilities = { tools: true, vision: false, pdf: false, promptCache: false };
   private seen = new WeakSet<CompletionRequest>();
   constructor(private latencyMs = 500) {}
 
+  info = { name: 'mock' as const, model: 'mock-legal-v2', mode: 'mock' as const, vision: false, thinking: true };
+
   async complete(req: CompletionRequest): Promise<CompletionResult> {
-    if (this.latencyMs > 0) await sleep(this.latencyMs * (0.6 + Math.random() * 0.8));
+    if (req.signal?.aborted) throw Errors.canceled();
     const h = req.hints;
+    let reasoning: string | undefined;
+    if (req.onThinking) {
+      // "深度思考" in mock mode: stream a short, clearly labelled simulated reasoning
+      const turnNow = req.messages.filter((m) => m.role === 'assistant').length;
+      reasoning = mockThinking(h, turnNow, h ? new Generator(h).keyword() : '');
+      const parts = reasoning.match(/[^，；。]+[，；。]?/g) ?? [reasoning];
+      for (const p of parts) {
+        await sleep(Math.min(80, Math.max(10, this.latencyMs / 8)), req.signal);
+        req.onThinking(p);
+      }
+    }
+    if (this.latencyMs > 0) await sleep(this.latencyMs * (0.6 + Math.random() * 0.8), req.signal);
     const tools = new Set((req.tools ?? []).map((t) => t.name));
     const turn = req.messages.filter((m) => m.role === 'assistant').length;
     const marker = h ? mockMarker(h) : undefined;
@@ -276,6 +318,7 @@ export class MockProvider implements LLMProvider {
     const chars = req.system.reduce((n, s) => n + s.text.length, 0) + JSON.stringify(req.messages).length;
     return {
       content,
+      reasoning,
       model: this.info.model,
       usage: { inputTokens: Math.ceil(chars / 4), outputTokens: Math.ceil(JSON.stringify(content).length / 4) },
       stopReason: content.some((b) => b.type === 'tool_use') ? 'tool_use' : 'end',

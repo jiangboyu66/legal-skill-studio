@@ -6,7 +6,7 @@ import { requirePermission } from '../core/permissions';
 import { renderRunMarkdown } from '../core/report';
 import { Errors } from '../errors';
 import { can, h, param, text, who } from './util';
-import { runForViewer } from './views';
+import { eventForViewer, runForViewer } from './views';
 
 export function toSummary(run: Run): RunSummary {
   const nodes = run.order.map((id) => run.nodes[id]);
@@ -69,9 +69,12 @@ export function runsRouter(ctx: AppContext) {
     h((req, res) => {
       const { user, org } = who(req);
       const run = load(user, org, param(req, 'id'));
+      const internals = can(user, org, 'run.view_internals');
       res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache, no-transform', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
       res.write(`retry: 3000\nevent: hello\ndata: ${JSON.stringify({ runId: run.id, status: run.status })}\n\n`);
-      const unsubscribe = ctx.events.subscribe(run.id, (e) => res.write(`data: ${JSON.stringify(e)}\n\n`));
+      const unsubscribe = ctx.events.subscribe(run.id, (e) => {
+        if (eventForViewer(e, internals)) res.write(`data: ${JSON.stringify(e)}\n\n`);
+      });
       const ping = setInterval(() => res.write(': ping\n\n'), 15_000);
       req.on('close', () => {
         clearInterval(ping);
@@ -91,9 +94,19 @@ export function runsRouter(ctx: AppContext) {
       const inputs: Record<string, unknown> = {};
       for (const [k, v] of Object.entries(prev.inputs)) inputs[k] = prev.documents[k] ? { documentId: prev.documents[k] } : v;
       Object.assign(inputs, override);
-      const run = await engine.start({ org, user, workflow: wf, mode: prev.mode, inputs, fault: prev.faultInjection, rerunOf: prev.id });
+      const run = await engine.start({ org, user, workflow: wf, mode: prev.mode, inputs, fault: prev.faultInjection, rerunOf: prev.id, options: can(user, org, 'run.view_internals') ? prev.options : undefined });
       res.status(201);
       return out(user, org, run);
+    }),
+  );
+
+  /** Stops a running run ("停止"): in-flight model calls are aborted, unfinished nodes are skipped. */
+  r.post(
+    '/:id/cancel',
+    h(async (req) => {
+      const { user, org } = who(req);
+      const run = load(user, org, param(req, 'id'));
+      return out(user, org, await engine.cancel({ org, user, runId: run.id }));
     }),
   );
 

@@ -40,6 +40,11 @@ export interface ExecuteSkillParams {
   onModelCall?: (turn: number) => void;
   /** Agent definition to run the skill with (default: skill-runner). */
   agent?: AgentDefinition;
+  /** "深度思考": record the model's reasoning (main agent and verifier) and stream it live. */
+  showThinking?: boolean;
+  onThinkingDelta?: (key: string, text: string, agent?: string) => void;
+  /** Stops the execution (model requests included) when the run is stopped. */
+  signal?: AbortSignal;
 }
 
 /** Context handed to SkillOutput hooks (grounding checks, legal verification). */
@@ -60,6 +65,9 @@ export interface SkillOutputContext {
   canUseTool?: (tool: string) => PermissionEffect;
   grantedTools?: string[];
   onTranscript?: (e: TranscriptEntry) => void;
+  showThinking?: boolean;
+  onThinkingDelta?: (key: string, text: string, agent?: string) => void;
+  signal?: AbortSignal;
 }
 
 export function jurisdictionLine(j?: Jurisdiction): string | undefined {
@@ -248,6 +256,9 @@ export async function executeSkill(p: ExecuteSkillParams): Promise<SkillExecutio
       priceFn: runtime.priceFn,
       onTranscript: p.onTranscript,
       onModelCall: p.onModelCall,
+      showThinking: p.showThinking,
+      onThinkingDelta: p.onThinkingDelta ? (key, text) => p.onThinkingDelta!(key, text) : undefined,
+      signal: p.signal,
       scrub: leakScrubber(guard, promptFingerprints(agent)),
       hints: { skillName: skill.name, agentType: agent.agentType, format: cfg.output.format, fields: cfg.output.fields, inputDefs: cfg.inputs, inputs: modelInputs, knowledge },
     });
@@ -289,6 +300,7 @@ export async function executeSkill(p: ExecuteSkillParams): Promise<SkillExecutio
         const ctx: SkillOutputContext = {
           runtime, org, config: cfg, inputs, documents, rules, knowledge, channel: p.channel, jurisdiction: p.jurisdiction,
           execution, pseudo, canUseTool: p.canUseTool, grantedTools: p.grantedTools, onTranscript: p.onTranscript,
+          showThinking: p.showThinking, onThinkingDelta: p.onThinkingDelta, signal: p.signal,
         };
         await runtime.hooks.run('SkillOutput', ctx, {
           onNote: (e) => {

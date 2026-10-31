@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { Router } from 'express';
 import type { ChatAttachment, ChatSendResult, Conversation, ConversationMessage, Org, User } from '../../shared/types';
-import { answerFollowUp, DEFAULT_TITLE, historyFor, inputsFromChat, summarize, targetRunId, titleFrom } from '../core/chat';
+import { answerFollowUp, DEFAULT_TITLE, historyFor, inputsFromChat, summarize, targetRunId, thinkingOf, titleFrom } from '../core/chat';
 import { requirePermission } from '../core/permissions';
 import type { AppContext } from '../context';
 import { AppError, Errors } from '../errors';
@@ -11,7 +11,7 @@ import { runForViewer } from './views';
 const now = () => new Date().toISOString();
 const mid = () => `msg_${randomUUID().slice(0, 10)}`;
 const MAX_MESSAGES = 400;
-const TERMINAL = ['succeeded', 'failed', 'rejected'];
+const TERMINAL = ['succeeded', 'failed', 'rejected', 'canceled'];
 
 /**
  * Chat home API. Conversations are private to their creator. A "run" message starts an ordinary workflow
@@ -21,8 +21,10 @@ const TERMINAL = ['succeeded', 'failed', 'rejected'];
 export function conversationsRouter(ctx: AppContext) {
   const r = Router();
   const { db, engine } = ctx;
-  /** One follow-up at a time per conversation (the answer is appended to the thread when it arrives). */
-  const answering = new Set<string>();
+  /** One follow-up at a time per conversation (the answer is appended when it arrives); stoppable. */
+  const answering = new Map<string, AbortController>();
+  /** Event channel of a conversation (live reasoning of the answer being written). */
+  const channel = (id: string) => `conv:${id}`;
 
   const own = (org: Org, user: User, id: string): Conversation => {
     const c = db.conversations.get(org.id, id);
@@ -89,13 +91,48 @@ export function conversationsRouter(ctx: AppContext) {
     }),
   );
 
+  /** Live events of a conversation: the reasoning of a follow-up answer while it is written ("深度思考"). */
+  r.get(
+    '/:id/events',
+    h((req, res) => {
+      const { user, org } = who(req);
+      const c = own(org, user, param(req, 'id'));
+      const internals = can(user, org, 'run.view_internals');
+      res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache, no-transform', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
+      res.write(`retry: 3000\nevent: hello\ndata: {}\n\n`);
+      const unsubscribe = ctx.events.subscribe(channel(c.id), (e) => {
+        if (internals || e.type !== 'thinking_delta') res.write(`data: ${JSON.stringify(e)}\n\n`);
+      });
+      const ping = setInterval(() => res.write(': ping\n\n'), 15_000);
+      req.on('close', () => {
+        clearInterval(ping);
+        unsubscribe();
+      });
+    }),
+  );
+
+  /** Stops the follow-up answer being written ("停止"). */
+  r.post(
+    '/:id/cancel',
+    h((req) => {
+      const { user, org } = who(req);
+      const c = own(org, user, param(req, 'id'));
+      const ctl = answering.get(c.id);
+      if (!ctl) throw Errors.conflict('当前没有正在生成的回答。');
+      ctl.abort();
+      return { ok: true };
+    }),
+  );
+
   r.post(
     '/:id/messages',
     h(async (req, res): Promise<ChatSendResult> => {
       const { user, org } = who(req);
       const c = own(org, user, param(req, 'id'));
-      const b = (req.body ?? {}) as { mode?: unknown; text?: unknown; workflowId?: unknown; attachments?: unknown; inputs?: unknown; runId?: unknown; rerunOf?: unknown };
+      const b = (req.body ?? {}) as { mode?: unknown; text?: unknown; workflowId?: unknown; attachments?: unknown; inputs?: unknown; runId?: unknown; rerunOf?: unknown; thinking?: unknown };
       const msgText = text(b.text, 200_000);
+      // "深度思考": show the model's reasoning — for roles that may see run internals
+      const showThinking = b.thinking === true && can(user, org, 'run.view_internals');
 
       // ── follow-up question about a run in this conversation ──
       if (b.mode === 'ask') {
@@ -107,20 +144,46 @@ export function conversationsRouter(ctx: AppContext) {
         const run = engine.get(org.id, runId);
         if (!TERMINAL.includes(run.status)) throw new AppError('RUN_NOT_FINISHED', '这次运行还没有结束，结束后再追问。', { status: 409, hint: '运行卡片会实时显示进度；需要审批的节点需先由审核人处理。' });
         if (answering.has(c.id)) throw new AppError('CHAT_BUSY', '上一条追问还在回答中，请稍候。', { status: 409 });
-        answering.add(c.id);
+        const ctl = new AbortController();
+        answering.set(c.id, ctl);
         try {
           const history = historyFor(c, runId);
           c.messages.push({ id: mid(), role: 'user', at: now(), mode: 'ask', text: msgText, runId });
           if (c.title === DEFAULT_TITLE) c.title = titleFrom(msgText, []);
           save(c);
           ctx.rt.audit(org.id, user, 'conversation.ask', 'run', runId, { conversationId: c.id });
-          const exec = await answerFollowUp({ rt: ctx.rt, org, user, run, question: msgText, history });
+          const exec = await answerFollowUp({
+            rt: ctx.rt,
+            org,
+            user,
+            run,
+            question: msgText,
+            history,
+            showThinking,
+            onThinkingDelta: (key, t) => ctx.events.publish({ type: 'thinking_delta', runId: channel(c.id), nodeId: 'answer', key, text: t }),
+            signal: ctl.signal,
+          });
           // Re-read: the thread may have been renamed meanwhile; append to the stored copy.
           const fresh = db.conversations.get(org.id, c.id) ?? c;
+          const stopped = ctl.signal.aborted;
           const reply: ConversationMessage =
-            exec.ok && typeof exec.output === 'string' && exec.output.trim()
-              ? { id: mid(), role: 'assistant', at: now(), kind: 'answer', text: exec.output, runId, provider: ctx.rt.provider.info, usage: exec.usage, security: exec.security, latencyMs: exec.latencyMs }
-              : { id: mid(), role: 'assistant', at: now(), kind: 'error', text: exec.error?.message ?? '没有得到回答。', code: exec.error?.code, hint: exec.error?.hint, runId };
+            !stopped && exec.ok && typeof exec.output === 'string' && exec.output.trim()
+              ? {
+                  id: mid(),
+                  role: 'assistant',
+                  at: now(),
+                  kind: 'answer',
+                  text: exec.output,
+                  runId,
+                  provider: ctx.rt.provider.info,
+                  usage: exec.usage,
+                  security: exec.security,
+                  latencyMs: exec.latencyMs,
+                  thinking: showThinking ? thinkingOf(exec) : undefined,
+                }
+              : stopped
+                ? { id: mid(), role: 'assistant', at: now(), kind: 'error', text: '已停止回答。', code: 'RUN_CANCELED', runId }
+                : { id: mid(), role: 'assistant', at: now(), kind: 'error', text: exec.error?.message ?? '没有得到回答。', code: exec.error?.code, hint: exec.error?.hint, runId };
           fresh.messages.push(reply);
           return { conversation: save(fresh) };
         } finally {
@@ -160,7 +223,7 @@ export function conversationsRouter(ctx: AppContext) {
       const params = b.inputs && typeof b.inputs === 'object' && !Array.isArray(b.inputs) ? (b.inputs as Record<string, unknown>) : {};
       inputs ??= inputsFromChat(wf.published.inputs, { text: msgText, attachments, params });
       // Validation errors (missing inputs, unapproved rule packs …) are returned to the composer, not stored.
-      const run = await engine.start({ org, user, workflow: wf, mode: 'production', inputs, rerunOf });
+      const run = await engine.start({ org, user, workflow: wf, mode: 'production', inputs, rerunOf, options: showThinking ? { showThinking: true } : undefined });
       const t = now();
       const shownText = rerunOf ? `重新运行 ${rerunOf}` : msgText;
       c.messages.push({ id: mid(), role: 'user', at: t, mode: 'run', text: shownText, attachments: attachments.length ? attachments : undefined, workflowId: wf.id, workflowName: wf.name });

@@ -395,7 +395,9 @@ export type TranscriptEntry =
   | { type: 'tool_result'; turn: number; id: string; name: string; ok: boolean; summary: string }
   | { type: 'permission'; turn: number; tool: string; decision: PermissionEffect; reason?: string }
   | { type: 'hook'; turn: number; hook: string; message: string }
-  | { type: 'note'; turn: number; message: string };
+  | { type: 'note'; turn: number; message: string }
+  /** The model's reasoning for one turn ("深度思考"), recorded only when the run asked to show it. */
+  | { type: 'thinking'; turn: number; text: string; agent?: string };
 
 export interface PromptRecord {
   system: string;
@@ -445,7 +447,7 @@ export interface SkillExecution {
   permissionRequest?: { tool: string; input: unknown; reason: string };
 }
 
-export type RunStatus = 'queued' | 'running' | 'waiting_approval' | 'succeeded' | 'failed' | 'rejected';
+export type RunStatus = 'queued' | 'running' | 'waiting_approval' | 'succeeded' | 'failed' | 'rejected' | 'canceled';
 export type NodeStatus = 'pending' | 'running' | 'waiting_approval' | 'succeeded' | 'failed' | 'skipped' | 'rejected';
 
 export interface ApprovalDecision {
@@ -501,6 +503,8 @@ export interface ProviderInfo {
   model: string;
   mode: 'real' | 'mock';
   vision: boolean;
+  /** The model returns its reasoning (DeepSeek thinking mode, Claude thinking; simulated in mock mode). */
+  thinking?: boolean;
 }
 
 export interface RulePackSnapshot {
@@ -557,12 +561,21 @@ export interface Run {
   retryOf?: string;
   /** Activity log ("运行过程"): printed live while the run executes and kept for replay. */
   log?: RunLogEntry[];
+  options?: RunOptions;
+  /** Set when someone stopped the run by hand. */
+  canceled?: { byUserId: string; byName: string; at: string };
   createdAt: string;
   startedAt?: string;
   finishedAt?: string;
 }
 
-export type RunLogKind = 'run' | 'node' | 'model' | 'tool' | 'result' | 'approval' | 'note' | 'error';
+export type RunLogKind = 'run' | 'node' | 'model' | 'thinking' | 'tool' | 'result' | 'approval' | 'note' | 'error';
+
+/** Per-run display options chosen when the run is started. */
+export interface RunOptions {
+  /** "深度思考": record and show the model's reasoning (only for roles that may see run internals). */
+  showThinking?: boolean;
+}
 
 /** One line of a run's activity log. `status` records the node / run state after the event (drives replay). */
 export interface RunLogEntry {
@@ -635,7 +648,9 @@ export type RunEvent =
   | { type: 'transcript'; runId: string; nodeId: string; entry: TranscriptEntry }
   | { type: 'approval_requested'; runId: string; nodeId: string }
   | { type: 'approval_decided'; runId: string; nodeId: string; decision: 'approved' | 'rejected' }
-  | { type: 'log'; runId: string; entry: RunLogEntry };
+  | { type: 'log'; runId: string; entry: RunLogEntry }
+  /** Live reasoning text while a model call streams (not stored; the full text is stored as a transcript entry). */
+  | { type: 'thinking_delta'; runId: string; nodeId: string; key: string; text: string; agent?: string };
 
 export interface AuditEvent {
   id: string;
@@ -672,7 +687,7 @@ export type ChatMode = 'run' | 'ask';
 export type ConversationMessage =
   | { id: string; role: 'user'; at: string; mode: ChatMode; text: string; attachments?: ChatAttachment[]; workflowId?: string; workflowName?: string; runId?: string }
   | { id: string; role: 'assistant'; at: string; kind: 'run'; runId: string; workflowId: string; workflowName: string }
-  | { id: string; role: 'assistant'; at: string; kind: 'answer'; text: string; runId: string; provider: ProviderInfo; usage?: Usage; security?: SecurityReport; latencyMs?: number }
+  | { id: string; role: 'assistant'; at: string; kind: 'answer'; text: string; runId: string; provider: ProviderInfo; usage?: Usage; security?: SecurityReport; latencyMs?: number; thinking?: string }
   | { id: string; role: 'assistant'; at: string; kind: 'error'; text: string; code?: string; hint?: string; runId?: string };
 
 export interface Conversation {

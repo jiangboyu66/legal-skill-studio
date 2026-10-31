@@ -44,6 +44,8 @@ export function toErrorInfo(err: unknown): AppErrorInfo {
 // ---- Factories for the errors users will actually see ----
 
 export const Errors = {
+  /** A run or answer stopped by the user (never retried). */
+  canceled: () => new AppError('RUN_CANCELED', '已手动停止。', { status: 409, hint: '可以“从中断处继续”，或重新运行。' }),
   missingInputs: (fields: { key: string; label: string }[]) =>
     new AppError(
       'MISSING_INPUT',

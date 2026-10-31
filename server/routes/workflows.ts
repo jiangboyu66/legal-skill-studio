@@ -186,9 +186,11 @@ export function workflowsRouter(ctx: AppContext) {
     h(async (req, res) => {
       const { user, org } = who(req);
       const w = get(org, param(req, 'id'));
-      const b = (req.body ?? {}) as { mode?: string; inputs?: Record<string, unknown>; fault?: FaultInjection };
+      const b = (req.body ?? {}) as { mode?: string; inputs?: Record<string, unknown>; fault?: FaultInjection; options?: { showThinking?: unknown } };
       const fault = b.fault && FAULTS.includes(b.fault.type) ? { type: b.fault.type, nodeId: text(b.fault.nodeId, 40) || undefined } : undefined;
-      const run = await ctx.engine.start({ org, user, workflow: w, mode: b.mode === 'test' ? 'test' : 'production', inputs: b.inputs ?? {}, fault });
+      // "深度思考" (show the model's reasoning) is for roles that may see run internals
+      const options = b.options?.showThinking === true && can(user, org, 'run.view_internals') ? { showThinking: true } : undefined;
+      const run = await ctx.engine.start({ org, user, workflow: w, mode: b.mode === 'test' ? 'test' : 'production', inputs: b.inputs ?? {}, fault, options });
       res.status(201);
       return runForViewer(run, can(user, org, 'run.view_internals'));
     }),

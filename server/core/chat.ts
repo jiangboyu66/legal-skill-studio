@@ -99,7 +99,17 @@ export function historyFor(conv: Conversation, runId: string, maxPairs = 4): str
 }
 
 /** Follow-up answer through the normal skill pipeline (pseudonymisation, input fencing, leak scrubbing). */
-export async function answerFollowUp(p: { rt: Runtime; org: Org; user: User; run: Run; question: string; history: string }): Promise<SkillExecution> {
+export async function answerFollowUp(p: {
+  rt: Runtime;
+  org: Org;
+  user: User;
+  run: Run;
+  question: string;
+  history: string;
+  showThinking?: boolean;
+  onThinkingDelta?: (key: string, text: string) => void;
+  signal?: AbortSignal;
+}): Promise<SkillExecution> {
   const { rt, org, user, run } = p;
   const doc = primaryDocument(rt, run);
   return executeSkill({
@@ -120,7 +130,16 @@ export async function answerFollowUp(p: { rt: Runtime; org: Org; user: User; run
       return d === 'ask' ? 'deny' : d;
     },
     agent: RESULT_QA,
+    showThinking: p.showThinking,
+    onThinkingDelta: p.onThinkingDelta,
+    signal: p.signal,
   });
+}
+
+/** The reasoning recorded for an answer ("深度思考"), main agent only. */
+export function thinkingOf(exec: SkillExecution): string | undefined {
+  const parts = exec.transcript.flatMap((e) => (e.type === 'thinking' && !e.agent ? [e.text] : []));
+  return parts.length ? parts.join('\n\n').slice(0, 30_000) : undefined;
 }
 
 /**

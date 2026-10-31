@@ -81,6 +81,7 @@ export class AnthropicProvider implements LLMProvider {
       timeoutMs: this.cfg.timeoutMs,
       providerLabel: 'Anthropic',
       keyEnvName: 'ANTHROPIC_API_KEY',
+      signal: req.signal,
     });
 
     const native = (Array.isArray(data.content) ? data.content : []) as NativeBlock[];
@@ -89,6 +90,11 @@ export class AnthropicProvider implements LLMProvider {
       if (b.type === 'text' && typeof b.text === 'string') content.push({ type: 'text', text: b.text });
       if (b.type === 'tool_use') content.push({ type: 'tool_use', id: String(b.id), name: String(b.name), input: b.input });
     }
+    // Thinking blocks stay in `raw` for replay; their text is the reasoning shown when the run asks for it.
+    const reasoning = native
+      .filter((b) => b.type === 'thinking' && typeof b.thinking === 'string')
+      .map((b) => String(b.thinking))
+      .join('\n\n');
     const stop = String(data.stop_reason ?? '');
     const u = (data.usage ?? {}) as Record<string, number>;
     return {
@@ -102,6 +108,7 @@ export class AnthropicProvider implements LLMProvider {
         cacheWriteTokens: u.cache_creation_input_tokens,
       },
       stopReason: stop === 'end_turn' || stop === 'stop_sequence' ? 'end' : stop || 'end',
+      reasoning: reasoning || undefined,
     };
   }
 }
