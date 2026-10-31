@@ -2,7 +2,8 @@ import { type ReactNode, useCallback, useEffect, useMemo, useState } from 'react
 import { Link, Navigate, NavLink, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import type { Me, Meta } from '../shared/types';
 import { api, setUnauthenticatedHandler } from './api';
-import { AuthCtx, type AuthState, Loading, MetaCtx, RoleBadge, useAuth, useLoad } from './components/ui';
+import { AuthCtx, type AuthState, ErrorBoundary, Loading, MetaCtx, RoleBadge, useAuth, useLoad } from './components/ui';
+import Chat from './pages/Chat';
 import Admin from './pages/Admin';
 import Documents from './pages/Documents';
 import Login from './pages/Login';
@@ -64,12 +65,17 @@ function Guard({ any, children }: { any: string[]; children: ReactNode }) {
 
 function Shell({ meta }: { meta: Meta | null }) {
   const { me, logout, can } = useAuth();
+  const location = useLocation();
   const may = (area: keyof typeof AREA) => AREA[area].some(can);
+  const chat = location.pathname === '/' || location.pathname.startsWith('/chat/');
   return (
     <div className="shell">
       <nav className="side" aria-label="主导航">
         <div className="brand">Legal Skill Studio</div>
         <div className="brand-sub">{me.org.name}</div>
+        <NavLink to="/" end className={() => (chat ? 'active' : '')} data-testid="nav-chat">
+          对话
+        </NavLink>
         <NavLink to="/workflows">工作流</NavLink>
         <NavLink to="/skills">Skills</NavLink>
         {may('rulepacks') && <NavLink to="/rulepacks">规则包</NavLink>}
@@ -107,11 +113,13 @@ function Shell({ meta }: { meta: Meta | null }) {
           </div>
         </div>
       </nav>
-      <main className="main">
+      <main className={`main ${chat ? 'chat-mode' : ''}`}>
         <div className="page">
+          <ErrorBoundary label="页面" resetKey={location.key}>
           <Routes>
-            <Route path="/" element={<Navigate to="/workflows" replace />} />
-            <Route path="/login" element={<Navigate to="/workflows" replace />} />
+            <Route path="/" element={<Chat />} />
+            <Route path="/chat/:id" element={<Chat />} />
+            <Route path="/login" element={<Navigate to="/" replace />} />
             <Route path="/skills" element={<SkillsList />} />
             <Route path="/skills/new" element={<Guard any={AREA.newSkill}><SkillEditor /></Guard>} />
             <Route path="/skills/:id" element={<SkillEditor />} />
@@ -131,6 +139,7 @@ function Shell({ meta }: { meta: Meta | null }) {
             <Route path="/admin" element={<Guard any={AREA.admin}><Admin /></Guard>} />
             <Route path="*" element={<div className="empty">页面不存在。</div>} />
           </Routes>
+          </ErrorBoundary>
         </div>
       </main>
     </div>

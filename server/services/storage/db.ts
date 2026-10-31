@@ -3,6 +3,7 @@ import { createRequire } from 'node:module';
 import path from 'node:path';
 import type {
   AuditEvent,
+  Conversation,
   EvalRun,
   MaterialDocument,
   OptimizationRun,
@@ -56,6 +57,9 @@ const MIGRATIONS: string[] = [
    CREATE INDEX IF NOT EXISTS idx_evals_skill ON evals(org_id, skill_id, created_at);
    CREATE INDEX IF NOT EXISTS idx_opt_skill ON optimizations(org_id, skill_id, created_at);
    CREATE INDEX IF NOT EXISTS idx_docs_created ON documents(created_at);`,
+  // v3.2: chat conversations (private per user; encrypted like runs)
+  `CREATE TABLE IF NOT EXISTS conversations (id TEXT PRIMARY KEY, org_id TEXT NOT NULL, user_id TEXT NOT NULL, updated_at TEXT, data TEXT NOT NULL);
+   CREATE INDEX IF NOT EXISTS idx_conv_user ON conversations(org_id, user_id, updated_at);`,
 ];
 
 /** Encodes the JSON payload column; tables holding materials or outputs are encrypted when a key is set. */
@@ -126,6 +130,7 @@ export class Db {
   runs: EntityTable<Run>;
   evals: EntityTable<EvalRun>;
   optimizations: EntityTable<OptimizationRun>;
+  conversations: EntityTable<Conversation>;
   readonly filesDir: string;
   /** Set when DATA_ENCRYPTION_KEY is configured: documents, runs, evals and stored files are encrypted. */
   readonly cipher?: DataCipher;
@@ -177,6 +182,15 @@ export class Db {
     );
     this.evals = new EntityTable<EvalRun>(db, 'evals', (e) => ({ skill_id: e.skillId, created_at: e.createdAt }), this.secret);
     this.optimizations = new EntityTable<OptimizationRun>(db, 'optimizations', (o) => ({ skill_id: o.skillId, created_at: o.createdAt }), this.secret);
+    this.conversations = new EntityTable<Conversation>(db, 'conversations', (c) => ({ user_id: c.userId, updated_at: c.updatedAt }), this.secret);
+  }
+
+  /** A user's conversations, most recent first. */
+  listConversations(orgId: string, userId: string, limit = 100): Conversation[] {
+    return this.db
+      .prepare(`SELECT data FROM conversations WHERE org_id = ? AND user_id = ? ORDER BY updated_at DESC LIMIT ${Math.max(1, Math.min(500, Math.floor(limit)))}`)
+      .all(orgId, userId)
+      .map((r) => parse<Conversation>(r, this.secret)!);
   }
 
   tx<T>(fn: () => T): T {
@@ -277,7 +291,7 @@ export class Db {
     let encryptedRows = 0;
     let plainRows = 0;
     let sample: string | undefined;
-    for (const t of ['documents', 'runs', 'evals']) {
+    for (const t of ['documents', 'runs', 'evals', 'conversations']) {
       const r = this.db.prepare(`SELECT SUM(CASE WHEN data LIKE 'enc:v1:%' THEN 1 ELSE 0 END) AS e, SUM(CASE WHEN data LIKE 'enc:v1:%' THEN 0 ELSE 1 END) AS p FROM ${t}`).get() as { e: number | null; p: number | null };
       encryptedRows += r.e ?? 0;
       plainRows += r.p ?? 0;
@@ -309,6 +323,7 @@ export class Db {
       evals = Number((this.db.prepare('SELECT COUNT(*) AS n FROM evals WHERE created_at < ?').get(cutoffIso) as { n: number }).n);
       this.db.prepare('DELETE FROM evals WHERE created_at < ?').run(cutoffIso);
       this.db.prepare('DELETE FROM optimizations WHERE created_at < ?').run(cutoffIso);
+      this.db.prepare('DELETE FROM conversations WHERE updated_at < ?').run(cutoffIso);
       const referenced = new Set<string>();
       for (const row of this.db.prepare('SELECT data FROM runs').all()) for (const id of Object.values(parse<Run>(row, this.secret)!.documents ?? {})) referenced.add(id);
       for (const row of this.db.prepare('SELECT id, org_id FROM documents WHERE created_at < ?').all(cutoffIso) as { id: string; org_id: string }[]) {

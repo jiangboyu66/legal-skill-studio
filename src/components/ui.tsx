@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useRef, useState, type DependencyList, type ReactNode, type TextareaHTMLAttributes } from 'react';
+import { Component, createContext, useCallback, useContext, useEffect, useLayoutEffect, useRef, useState, type DependencyList, type ReactNode, type TextareaHTMLAttributes } from 'react';
 import { ROLE_LABEL } from '../../shared/schema';
 import type { LifecycleStatus, Me, Meta, NodeStatus, RulePackStatus, RunStatus, ValidationIssue, Verdict } from '../../shared/types';
 import { ApiError } from '../api';
@@ -28,6 +28,34 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   );
 }
 export const useToast = () => useContext(ToastCtx);
+
+// ---------- render errors ----------
+/**
+ * Keeps a rendering error in one part of a page from blanking the whole page (React unmounts the tree on
+ * an uncaught render error). `resetKey` clears the error when the content changes.
+ */
+export class ErrorBoundary extends Component<{ children: ReactNode; label?: string; resetKey?: unknown; fallback?: (error: Error) => ReactNode }, { error?: Error }> {
+  state: { error?: Error } = {};
+  static getDerivedStateFromError(error: Error) {
+    return { error };
+  }
+  componentDidCatch(error: Error) {
+    console.error('[ui] render error', error);
+  }
+  componentDidUpdate(prev: { resetKey?: unknown }) {
+    if (this.state.error && prev.resetKey !== this.props.resetKey) this.setState({ error: undefined });
+  }
+  render() {
+    const { error } = this.state;
+    if (!error) return this.props.children;
+    if (this.props.fallback) return this.props.fallback(error);
+    return (
+      <div className="notice warn small" data-testid="render-error">
+        {this.props.label ?? '这部分内容'}暂时无法显示（{error.message}）。数据已保存，不影响页面其他部分；可刷新页面，或导出 JSON 查看原始结果。
+      </div>
+    );
+  }
+}
 
 // ---------- meta & session ----------
 export const MetaCtx = createContext<Meta | null>(null);
@@ -93,7 +121,7 @@ export function ErrorNotice({ error, title }: { error: unknown; title?: string }
 }
 
 // ---------- status badges ----------
-const STATUS_LABEL: Record<RunStatus | NodeStatus, string> = {
+export const STATUS_LABEL: Record<RunStatus | NodeStatus, string> = {
   queued: '排队中',
   pending: '等待',
   running: '运行中',
@@ -153,7 +181,8 @@ const VERDICT: Record<Verdict, [string, string]> = {
   not_checked: ['未经代理核验', ''],
 };
 export function VerdictBadge({ verdict }: { verdict: Verdict }) {
-  const [label, cls] = VERDICT[verdict];
+  // Unknown values (e.g. from an older record) must never break the page.
+  const [label, cls] = VERDICT[verdict] ?? [String(verdict ?? '未知'), 'warn'];
   return (
     <span className={`badge ${cls}`} data-testid={`verdict-${verdict}`}>
       {label}

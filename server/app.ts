@@ -17,6 +17,7 @@ import { resolveFeatures } from './features';
 import { loadPlugins } from './plugins/loader';
 import { adminRouter } from './routes/admin';
 import { authRouter } from './routes/auth';
+import { conversationsRouter } from './routes/conversations';
 import { documentsRouter } from './routes/documents';
 import { evalsRouter } from './routes/evals';
 import { APP_VERSION, metaRouter } from './routes/meta';
@@ -159,6 +160,7 @@ export async function createApp(opts: { config?: Partial<AppConfig>; provider?: 
   app.use('/api/workflows', workflowsRouter(ctx));
   app.use('/api/reviews', reviewsRouter(ctx));
   app.use('/api/runs', runsRouter(ctx));
+  app.use('/api/conversations', conversationsRouter(ctx));
   app.use('/api/admin', adminRouter(ctx));
   app.use('/api', evalsRouter(ctx));
   app.use('/api', (_req, res) => {

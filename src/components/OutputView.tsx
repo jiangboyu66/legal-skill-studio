@@ -101,13 +101,13 @@ function VerificationMark({ v }: { v?: VerificationItem }) {
         )}
         {v.ruleTitle && <span className="small muted">规则：{v.ruleId} {v.ruleTitle}</span>}
       </div>
-      {(v.reason || notes.length > 0 || v.missingFacts?.length) && (
+      {(v.reason || notes.length > 0 || (Array.isArray(v.missingFacts) && v.missingFacts.length > 0)) && (
         <ul className="verify-notes">
-          {v.reason && <li>核验代理：{v.reason}</li>}
+          {v.reason && <li>核验代理：{String(v.reason)}</li>}
           {notes.map((n, i) => (
             <li key={i}>{n}</li>
           ))}
-          {v.missingFacts?.length ? <li>需补充的事实：{v.missingFacts.join('；')}</li> : null}
+          {Array.isArray(v.missingFacts) && v.missingFacts.length ? <li>需补充的事实：{v.missingFacts.map(String).join('；')}</li> : null}
         </ul>
       )}
     </div>

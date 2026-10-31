@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { emptySkillConfig } from '../../shared/schema';
 import type { FaultType, SkillConfig, SkillTestResult, SkillView } from '../../shared/types';
-import { api } from '../api';
+import { api, download } from '../api';
 import { ChecksEditor, InputFieldsEditor, OutputFieldsEditor, RulePackPicker, ToolsPicker, VerificationEditor } from '../components/editors';
 import { type FormValues, InputsForm, SamplePicker, toApiInputs } from '../components/inputs';
 import OutputView, { GroundingSummary, SecurityNotes, Transcript, VerificationSummary } from '../components/OutputView';
@@ -194,9 +194,14 @@ function SkillEditorPage() {
         </div>
         <div className="actions">
           {id && (
-            <a className="btn" href={api.skills.exportUrl(id)} title="导出为 Agent Skills 标准格式">
+            <button
+              className="btn"
+              title="导出为 Agent Skills 标准格式"
+              data-testid="export-skill"
+              onClick={() => download(api.skills.exportUrl(id), 'SKILL.md').catch((e) => toast((e as Error).message, 'error'))}
+            >
               导出 SKILL.md
-            </a>
+            </button>
           )}
           {id && can('skill.edit') && <button onClick={duplicate}>复制</button>}
           {id && can('skill.delete') && (

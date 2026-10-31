@@ -30,7 +30,8 @@ export function authRouter(ctx: AppContext) {
       ctx.auth.setCookie(res, token);
       const org = ctx.db.orgs.get(user.orgId)!;
       ctx.rt.audit(org.id, user, 'auth.login');
-      return toMe(user, org);
+      // The token is also returned so the browser tab can keep its own session (Authorization header).
+      return { ...toMe(user, org), sessionToken: token };
     }),
   );
 
@@ -38,9 +39,17 @@ export function authRouter(ctx: AppContext) {
     '/logout',
     h((req, res) => {
       if (req.auth) ctx.rt.audit(req.auth.org.id, req.auth.user, 'auth.logout');
-      ctx.auth.logout(req);
-      ctx.auth.clearCookie(res);
+      ctx.auth.logout(req, res);
       return { ok: true };
+    }),
+  );
+
+  // New browser tab: trade the inherited tab token for a session of its own (same user, same expiry).
+  r.post(
+    '/fork',
+    h((req) => {
+      who(req);
+      return { sessionToken: ctx.auth.fork(req) };
     }),
   );
 

@@ -1,3 +1,4 @@
+import { type ReactNode, useEffect, useState } from 'react';
 import type { NodeStatus, WorkflowNode } from '../../shared/types';
 
 const W = 160;
@@ -31,24 +32,51 @@ function levels(nodes: WorkflowNode[]): Map<string, number> {
 
 const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 
+const TIP_W = 340;
+
 /**
  * Workflow DAG as SVG: columns are dependency levels (left → right), dashed edges mark conditional
  * nodes ("if"), approval nodes are drawn with a double border. Nodes are keyboard-selectable.
+ * With `tip`, hovering or focusing a node shows its live processing details.
  */
 export default function DagGraph({
   nodes,
   info = {},
   selected,
+  highlight,
   onSelect,
+  tip,
   testId = 'dag',
 }: {
   nodes: WorkflowNode[];
   info?: Record<string, DagNodeInfo>;
   selected?: string;
+  /** Node to emphasise (e.g. the one a replay step or a hovered log line refers to). */
+  highlight?: string;
   onSelect?: (id: string) => void;
+  /** Tooltip content for a node (called on every render, so it stays live). */
+  tip?: (id: string) => ReactNode;
   testId?: string;
 }) {
+  const [hover, setHover] = useState<{ id: string; x: number; y: number; above: boolean } | null>(null);
+  useEffect(() => {
+    if (!hover) return;
+    const hide = () => setHover(null);
+    window.addEventListener('scroll', hide, true);
+    window.addEventListener('resize', hide);
+    return () => {
+      window.removeEventListener('scroll', hide, true);
+      window.removeEventListener('resize', hide);
+    };
+  }, [hover]);
   if (!nodes.length) return <div className="empty small">还没有节点。</div>;
+  const show = (id: string, el: Element) => {
+    if (!tip) return;
+    const r = el.getBoundingClientRect();
+    const above = r.bottom + 280 > window.innerHeight && r.top > 280;
+    setHover({ id, x: Math.max(8, Math.min(r.left, window.innerWidth - TIP_W - 8)), y: above ? r.top - 8 : r.bottom + 8, above });
+  };
+  const tipId = `${testId}-tip`;
   const lv = levels(nodes);
   const cols = new Map<number, WorkflowNode[]>();
   for (const n of nodes) cols.set(lv.get(n.id) ?? 0, [...(cols.get(lv.get(n.id) ?? 0) ?? []), n]);
@@ -100,13 +128,18 @@ export default function DagGraph({
             <g
               key={n.id}
               transform={`translate(${p.x}, ${p.y})`}
-              className={`dag-node t-${n.type} ${st ? `s-${st}` : ''} ${selected === n.id ? 'sel' : ''} ${onSelect ? 'click' : ''}`}
+              className={`dag-node t-${n.type} ${st ? `s-${st}` : ''} ${selected === n.id ? 'sel' : ''} ${highlight === n.id ? 'hl' : ''} ${onSelect ? 'click' : ''}`}
               data-testid={`dag-node-${n.id}`}
               data-status={st}
               role={onSelect ? 'button' : undefined}
-              tabIndex={onSelect ? 0 : undefined}
+              tabIndex={onSelect || tip ? 0 : undefined}
               aria-label={label}
+              aria-describedby={hover?.id === n.id ? tipId : undefined}
               onClick={() => onSelect?.(n.id)}
+              onMouseEnter={(e) => show(n.id, e.currentTarget)}
+              onMouseLeave={() => setHover(null)}
+              onFocus={(e) => show(n.id, e.currentTarget)}
+              onBlur={() => setHover(null)}
               onKeyDown={(e) => {
                 if (onSelect && (e.key === 'Enter' || e.key === ' ')) {
                   e.preventDefault();
@@ -114,7 +147,7 @@ export default function DagGraph({
                 }
               }}
             >
-              <title>{`${n.name}${n.when ? `\n条件：${n.when}` : ''}`}</title>
+              {!tip && <title>{`${n.name}${n.when ? `\n条件：${n.when}` : ''}`}</title>}
               <rect width={W} height={H} rx={n.type === 'approval' ? 14 : 6} className="box" />
               {n.type === 'approval' && <rect x={3} y={3} width={W - 6} height={H - 6} rx={11} className="inner" />}
               <text x={12} y={24} className="name">
@@ -132,6 +165,11 @@ export default function DagGraph({
           );
         })}
       </svg>
+      {hover && tip && (
+        <div className="dag-tip" id={tipId} role="tooltip" data-testid="dag-tip" style={{ left: hover.x, width: TIP_W, ...(hover.above ? { bottom: window.innerHeight - hover.y } : { top: hover.y }) }}>
+          {tip(hover.id)}
+        </div>
+      )}
     </div>
   );
 }

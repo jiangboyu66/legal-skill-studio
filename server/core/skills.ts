@@ -36,6 +36,8 @@ export interface ExecuteSkillParams {
   grantedTools?: string[];
   fault?: FaultType;
   onTranscript?: (e: TranscriptEntry) => void;
+  /** Called before each model request of the main agent (progress display). */
+  onModelCall?: (turn: number) => void;
   /** Agent definition to run the skill with (default: skill-runner). */
   agent?: AgentDefinition;
 }
@@ -245,6 +247,7 @@ export async function executeSkill(p: ExecuteSkillParams): Promise<SkillExecutio
       budgetUsd: runtime.cfg.budgetUsdPerRun || undefined,
       priceFn: runtime.priceFn,
       onTranscript: p.onTranscript,
+      onModelCall: p.onModelCall,
       scrub: leakScrubber(guard, promptFingerprints(agent)),
       hints: { skillName: skill.name, agentType: agent.agentType, format: cfg.output.format, fields: cfg.output.fields, inputDefs: cfg.inputs, inputs: modelInputs, knowledge },
     });

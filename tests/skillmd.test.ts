@@ -53,7 +53,7 @@ it('exposes role baselines and extension points read-only', async () => {
   const p = (await t.call('runner', 'GET', '/api/admin/platform')).body;
   expect(p.roles.runner).toContain('workflow.run');
   expect(p.tools.map((x: { name: string }) => x.name)).toEqual(['read_document', 'search_document', 'lookup_rule', 'verify_quote', 'submit_output']);
-  expect(p.agents.map((a: { agentType: string }) => a.agentType)).toEqual(['skill-runner', 'verifier', 'skill-optimizer']);
+  expect(p.agents.map((a: { agentType: string }) => a.agentType)).toEqual(['skill-runner', 'verifier', 'skill-optimizer', 'result-qa']);
   expect(p.hooks.map((h: { name: string }) => h.name)).toContain('legal-verification');
   expect(p.plugins[0]).toMatchObject({ name: 'sg-marketing-compliance', builtIn: true });
 });

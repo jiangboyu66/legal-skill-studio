@@ -13,6 +13,7 @@ import type {
   RulePackSnapshot,
   Run,
   RunEvent,
+  RunLogEntry,
   RunStatus,
   RunWarning,
   SkillConfig,
@@ -21,6 +22,7 @@ import type {
   User,
   Workflow,
 } from '../../../shared/types';
+import { nodeDoneLine, runEndLine, transcriptLine } from '../../../shared/runlog';
 import { AppError, Errors, toErrorInfo } from '../../errors';
 import type { DocumentService } from '../../services/documents';
 import { resolveJurisdiction } from '../jurisdiction';
@@ -65,6 +67,7 @@ export class WorkflowEngine {
   private running = new Map<string, number>();
   private pending = new Set<Promise<void>>();
   private docCache = new Map<string, MaterialDocument>();
+  private saveTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   constructor(private rt: Runtime, private docs: DocumentService) {}
 
@@ -211,10 +214,26 @@ export class WorkflowEngine {
     const texts = [...Object.entries(inputs).filter(([k]) => !documents[k]).map(([, v]) => v), ...Object.values(documents).map((id) => this.doc(org.id, id)?.pages.map((x) => x.text).join('\n') ?? '')];
     const outcome = await this.rt.hooks.run('RunStart', { run, texts });
     run.warnings.push(...(outcome.warnings ?? []));
+    this.log(run, { kind: 'run', status: 'queued', text: this.startLine(run) });
+    for (const w of run.warnings) this.log(run, { kind: 'note', text: w.message });
     this.live.set(run.id, run);
     this.save(run);
     this.track(this.schedule(run.id));
     return run;
+  }
+
+  private startLine(run: Run): string {
+    const material = run.definition.inputs
+      .map((d) => {
+        const v = run.inputs[d.key];
+        if (!v?.trim()) return '';
+        const doc = run.documents[d.key] ? this.doc(run.orgId, run.documents[d.key]) : undefined;
+        const shown = doc && doc.kind !== 'text' ? doc.filename : v.replace(/\s+/g, ' ').slice(0, 40) + (v.length > 40 ? '…' : '');
+        return `${d.label}：${shown}`;
+      })
+      .filter(Boolean)
+      .join('；');
+    return `运行已创建：工作流「${run.workflowName}」${run.workflowVersion === 'draft' ? '草稿' : `v${run.workflowVersion}`}（${run.mode === 'production' ? '正式运行' : '测试运行'}），模型 ${run.provider.name} / ${run.provider.model}${material ? `；${material}` : ''}`;
   }
 
   /** Decision on an approval node, or on a tool permission request ("ask"). */
@@ -255,11 +274,24 @@ export class WorkflowEngine {
       }
     }
     this.rt.audit(p.org.id, p.user, req.tool ? `run.tool_${p.decision}` : `run.approval_${p.decision}`, 'run', run.id, { nodeId: p.nodeId, comment: rec.comment });
+    const said = rec.comment ? `：${rec.comment.slice(0, 80)}` : '';
+    this.log(run, {
+      kind: 'approval',
+      nodeId: p.nodeId,
+      status: nr.status,
+      text: req.tool
+        ? `${p.user.name}${p.decision === 'approved' ? '允许' : '拒绝'}了工具「${req.tool}」的使用申请${said}${p.decision === 'approved' ? '，节点将重新执行' : ''}`
+        : `${p.user.name}${p.decision === 'approved' ? '批准' : '驳回'}了「${nr.name}」${said}`,
+    });
+    for (const other of Object.values(run.nodes)) {
+      if (other.status === 'skipped' && other.skipReason === `「${nr.name}」被驳回`) this.log(run, { kind: 'node', nodeId: other.nodeId, status: 'skipped', text: `节点「${other.name}」跳过：${other.skipReason}` });
+    }
     this.emit({ type: 'approval_decided', runId: run.id, nodeId: p.nodeId, decision: p.decision });
     this.emit({ type: 'node_status', runId: run.id, nodeId: p.nodeId, status: nr.status });
     if (run.status === 'waiting_approval') {
       run.status = 'running';
       this.emit({ type: 'run_status', runId: run.id, status: 'running' });
+      this.log(run, { kind: 'run', status: 'running', text: '审批完成，继续执行' });
     }
     this.save(run);
     await this.schedule(run.id);
@@ -298,6 +330,7 @@ export class WorkflowEngine {
       error: undefined,
       rerunOf: undefined,
       retryOf: prev.id,
+      log: [],
       createdAt: now(),
       startedAt: undefined,
       finishedAt: undefined,
@@ -320,6 +353,8 @@ export class WorkflowEngine {
       };
     }
     this.rt.audit(org.id, user, 'run.retry', 'run', run.id, { retryOf: prev.id, reused: reused.map((n) => n.nodeId) });
+    this.log(run, { kind: 'run', status: 'queued', text: `从失败节点重试（原运行 ${prev.id}）：沿用原运行的版本与输入${prev.faultInjection ? '，不再注入故障' : ''}` });
+    for (const n of reused) this.log(run, { kind: 'node', nodeId: n.nodeId, status: 'succeeded', text: `节点「${n.name}」复用原运行的结果` });
     this.live.set(run.id, run);
     this.save(run);
     this.track(this.schedule(run.id));
@@ -331,6 +366,7 @@ export class WorkflowEngine {
     for (const run of this.rt.db.runsByStatus(['queued', 'running'])) {
       for (const nr of Object.values(run.nodes)) if (nr.status === 'running') nr.status = 'pending';
       run.warnings.push({ code: 'RESUMED', message: '服务重启后已自动恢复执行（中断的节点已重新运行）。' });
+      this.log(run, { kind: 'note', text: '服务重启后自动恢复执行，中断的节点将重新运行' });
       this.live.set(run.id, run);
       this.save(run);
       this.track(this.schedule(run.id));
@@ -371,15 +407,64 @@ export class WorkflowEngine {
   }
 
   private save(run: Run) {
+    const t = this.saveTimers.get(run.id);
+    if (t) {
+      clearTimeout(t);
+      this.saveTimers.delete(run.id);
+    }
     this.rt.db.runs.put(run);
+  }
+
+  /** Persists soon (log-only changes): readers get the live copy anyway; this is for durability across restarts. */
+  private saveSoon(run: Run) {
+    if (this.saveTimers.has(run.id)) return;
+    const t = setTimeout(() => {
+      this.saveTimers.delete(run.id);
+      if (this.live.get(run.id) !== run) return;
+      try {
+        this.rt.db.runs.put(run);
+      } catch {
+        /* closed during shutdown — the next state change saves again */
+      }
+    }, 1000);
+    t.unref?.();
+    this.saveTimers.set(run.id, t);
   }
 
   private emit(e: RunEvent) {
     this.rt.events.publish(e);
   }
 
+  /** Appends a line to the run's activity log and streams it to viewers. */
+  private log(run: Run, e: Omit<RunLogEntry, 'seq' | 'at'>) {
+    const entry: RunLogEntry = { seq: (run.log?.length ?? 0) + 1, at: now(), ...e };
+    (run.log ??= []).push(entry);
+    this.emit({ type: 'log', runId: run.id, entry });
+  }
+
+  private nodeLine(_run: Run, nr: NodeRun, status: NodeStatus): Omit<RunLogEntry, 'seq' | 'at'> {
+    const base = { nodeId: nr.nodeId, status };
+    switch (status) {
+      case 'running':
+        return { ...base, kind: 'node', text: `节点「${nr.name}」开始（Skill「${nr.skillName ?? ''}」${nr.skillVersion === 'draft' ? '草稿' : `v${nr.skillVersion}`}）` };
+      case 'succeeded':
+        return { ...base, kind: 'node', text: nodeDoneLine(nr) };
+      case 'failed':
+        return { ...base, kind: 'error', text: `节点「${nr.name}」失败：${nr.error?.message ?? ''}` };
+      case 'skipped':
+        return { ...base, kind: 'node', text: `节点「${nr.name}」跳过：${nr.skipReason ?? ''}` };
+      case 'waiting_approval':
+        return nr.approvalRequest?.tool
+          ? { ...base, kind: 'approval', text: `节点「${nr.name}」暂停：工具「${nr.approvalRequest.tool}」需要「${ROLE_LABEL[nr.approvalRequest.approverRole]}」批准` }
+          : { ...base, kind: 'approval', text: `等待审批：「${nr.name}」需要「${ROLE_LABEL[nr.approvalRequest?.approverRole ?? 'reviewer']}」批准` };
+      default:
+        return { ...base, kind: 'node', text: `节点「${nr.name}」：${status}` };
+    }
+  }
+
   private setNode(run: Run, nr: NodeRun, status: NodeStatus) {
     nr.status = status;
+    this.log(run, this.nodeLine(run, nr, status));
     this.save(run);
     this.emit({ type: 'node_status', runId: run.id, nodeId: nr.nodeId, status });
   }
@@ -397,12 +482,17 @@ export class WorkflowEngine {
     if (run.status === 'queued') {
       run.status = 'running';
       run.startedAt = now();
+      this.log(run, { kind: 'run', status: 'running', text: `开始执行（${run.order.length} 个节点${this.rt.features.PARALLEL_NODES ? `，最多 ${this.rt.cfg.workflowConcurrency} 个并行` : '，逐个执行'}）` });
       this.save(run);
       this.emit({ type: 'run_status', runId, status: 'running' });
     }
     const states = () => Object.values(run.nodes).map((n) => n.status);
     if (states().includes('failed')) {
-      for (const n of Object.values(run.nodes)) if (n.status === 'pending') Object.assign(n, { status: 'skipped', skipReason: '前序节点失败' });
+      for (const n of Object.values(run.nodes)) {
+        if (n.status !== 'pending') continue;
+        Object.assign(n, { status: 'skipped', skipReason: '前序节点失败' });
+        this.log(run, this.nodeLine(run, n, 'skipped'));
+      }
       if (!states().includes('running')) await this.finish(run, 'failed');
       else this.save(run);
       return;
@@ -453,7 +543,9 @@ export class WorkflowEngine {
         if ((this.running.get(runId) ?? 0) >= limit) break;
         this.running.set(runId, (this.running.get(runId) ?? 0) + 1);
         nr.startedAt = now();
+        nr.finishedAt = undefined;
         nr.error = undefined;
+        nr.transcript = [];
         this.setNode(run, nr, 'running');
         const job = this.runSkillNode(run, n)
           .catch((err) => {
@@ -474,6 +566,7 @@ export class WorkflowEngine {
     if (s.every((x) => FINISHED_NODE.includes(x))) await this.finish(run, 'succeeded');
     else if (!s.includes('running') && s.includes('waiting_approval') && run.status !== 'waiting_approval') {
       run.status = 'waiting_approval';
+      this.log(run, { kind: 'run', status: 'waiting_approval', text: '运行暂停，等待审批后继续' });
       this.save(run);
       this.emit({ type: 'run_status', runId, status: run.status });
     }
@@ -558,7 +651,18 @@ export class WorkflowEngine {
       canUseTool: (tool) => (starter ? decide(starter, org.policy, `tool:${tool}`) : 'allow'),
       grantedTools: run.grantedTools,
       fault: run.faultInjection?.nodeId === n.id ? run.faultInjection.type : undefined,
-      onTranscript: (entry) => this.emit({ type: 'transcript', runId: run.id, nodeId: n.id, entry }),
+      onTranscript: (entry) => {
+        // Kept on the live node so a reload mid-run shows the progress so far.
+        (nr.transcript ??= []).push(entry);
+        this.emit({ type: 'transcript', runId: run.id, nodeId: n.id, entry });
+        const line = transcriptLine(entry);
+        if (line) this.log(run, { ...line, nodeId: n.id });
+        this.saveSoon(run);
+      },
+      onModelCall: (turn) => {
+        this.log(run, { kind: 'model', nodeId: n.id, text: `「${n.name}」第 ${turn} 轮：等待模型回复（${this.rt.provider.info.model}）` });
+        this.saveSoon(run);
+      },
     });
     Object.assign(nr, {
       prompt: exec.prompt,
@@ -604,6 +708,7 @@ export class WorkflowEngine {
     for (const n of Object.values(run.nodes)) {
       if (n.status === 'pending' || n.status === 'waiting_approval') {
         Object.assign(n, { status: 'skipped', skipReason: n.skipReason ?? (status === 'failed' ? '运行已失败' : '运行已结束'), approvalRequest: undefined });
+        this.log(run, this.nodeLine(run, n, 'skipped'));
       }
     }
     if (status === 'succeeded') {
@@ -617,6 +722,7 @@ export class WorkflowEngine {
         if (designated && designated !== outId) run.warnings.push({ code: 'OUTPUT_FALLBACK', message: `指定的最终输出节点未执行，已改用「${run.nodes[outId].name}」的结果。` });
       }
     }
+    this.log(run, { kind: status === 'succeeded' ? 'run' : 'error', status, text: runEndLine(run) });
     this.save(run);
     this.live.delete(run.id);
     this.emit({ type: 'run_status', runId: run.id, status });

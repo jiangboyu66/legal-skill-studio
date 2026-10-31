@@ -1,8 +1,8 @@
 {
   "name": "legal-skill-studio",
-  "version": "3.1.0",
+  "version": "3.2.0",
   "private": true,
-  "description": "法律 AI 平台的 Skill 与 Workflow 自助创建原型 v3（DAG 工作流、多用户治理、版本钉住、数据保护、评测与受控自我优化；MVP 场景：新加坡营销物料合规初审）",
+  "description": "法律 AI 平台的 Skill 与 Workflow 自助创建原型 v3.2（对话首页、运行过程实时日志与回放、DAG 工作流、多用户治理、版本钉住、数据保护、评测与受控自我优化；MVP 场景：新加坡营销物料合规初审）",
   "type": "module",
   "engines": {
     "node": ">=22.13"

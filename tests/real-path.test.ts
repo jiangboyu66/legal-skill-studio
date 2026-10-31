@@ -8,7 +8,7 @@ import type { AddressInfo } from 'node:net';
 import { afterAll, beforeAll, expect, it } from 'vitest';
 import { AnthropicProvider } from '../server/services/llm/anthropic';
 import { HIGH_RISK_EDM } from '../server/seed/samples';
-import type { Run } from '../shared/types';
+import type { ChatSendResult, Conversation, Run } from '../shared/types';
 import { startApp, type TestApp, WF } from './helpers';
 
 type Msg = { role: string; content: any };
@@ -77,6 +77,12 @@ function respond(body: any): { content: unknown[]; stop_reason: string } {
         ],
         stop_reason: 'tool_use',
       };
+    case '结果追问': {
+      // chat follow-up: look at the material once, then answer using the placeholder it was given
+      if (turn === 0) return { content: [thinking, toolUse(id, 'search_document', { query: 'NRIC' })], stop_reason: 'tool_use' };
+      const placeholder = /\[NRIC_\d+\]/.exec(JSON.stringify(messages[0].content))?.[0] ?? '(none)';
+      return { content: [{ type: 'text', text: `第 1 条（NRIC-01）：材料要求读者回复 NRIC，${placeholder} 这类号码不应通过抽奖收集。` }], stop_reason: 'end_turn' };
+    }
     default:
       return { content: [thinking, { type: 'text', text: `## ${skill}\n\n总体风险：high。\n\n> 本意见为 AI 生成的初审草稿，须经法务复核后使用。` }], stop_reason: 'end_turn' };
   }
@@ -158,4 +164,29 @@ it('runs the seeded DAG workflow through the Anthropic adapter with tool use, ve
   expect(done.usage.inputTokens).toBe(1000 * calls.length);
   expect(done.usage.cacheReadTokens).toBe(800 * calls.length);
   expect(done.usage.costUsd).toBeGreaterThan(0);
+});
+
+it('answers chat follow-ups through the same adapter, with read-only tools and pseudonymisation', async () => {
+  const c = (await t.call<Conversation>('runner', 'POST', '/api/conversations', {})).body;
+  const r = await t.call<ChatSendResult>('runner', 'POST', `/api/conversations/${c.id}/messages`, { mode: 'run', text: HIGH_RISK_EDM, workflowId: WF, inputs: { channel: 'EDM' } });
+  expect(r.status).toBe(201);
+  const paused = await t.waitRun('runner', r.body.run!.id);
+  await t.call('reviewer', 'POST', `/api/runs/${paused.id}/nodes/legal_approval/decision`, { decision: 'approved', comment: '同意' });
+  expect((await t.waitRun('runner', paused.id, ['succeeded', 'failed'])).status).toBe('succeeded');
+
+  const before = calls.length;
+  const a = await t.call<ChatSendResult>('runner', 'POST', `/api/conversations/${c.id}/messages`, { mode: 'ask', text: '客户已经回复了 S1234567D，第 1 条应该怎么处理？' });
+  expect(a.status).toBe(200);
+  const qa = calls.slice(before).filter((x) => x.skill === '结果追问');
+  expect(qa).toHaveLength(2);
+  expect(qa[0].body.system.map((x: { text: string }) => x.text).join('\n')).toContain('# Agent: result-qa');
+  expect(qa[0].body.tools.map((x: { name: string }) => x.name).sort()).toEqual(['lookup_rule', 'read_document', 'search_document']);
+  const sent = (qa[0].body.messages[0].content as { text?: string }[]).map((b) => b.text ?? '').join('\n');
+  expect(sent).toContain('NRIC-01'); // the run's findings are in the context
+  expect(sent).toMatch(/<input-[0-9a-f]{8} name="run_result"/);
+  expect(sent).not.toContain('S1234567D'); // identifiers are replaced before the model sees them …
+  expect(sent).toMatch(/\[NRIC_1\]/);
+  const answer = a.body.conversation.messages.at(-1)!;
+  expect(answer).toMatchObject({ role: 'assistant', kind: 'answer', provider: { name: 'anthropic', mode: 'real' } });
+  expect(answer.role === 'assistant' && answer.kind === 'answer' && answer.text).toContain('S1234567D'); // … and restored for the user
 });

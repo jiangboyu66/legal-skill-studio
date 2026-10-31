@@ -154,7 +154,7 @@ function assert(cond, msg) {
     for (const sel of ['skill-instructions', 'skill-knowledge', 'test-panel', 'save-skill', 'eval-panel', 'submit-review']) {
       assert(!(await runner.$(`[data-testid=${sel}]`)), `使用者不应看到 ${sel}`);
     }
-    assert(!(await runner.$('a[href*="/export"]')), '使用者不应看到导出 SKILL.md');
+    assert(!(await runner.$('[data-testid=export-skill]')), '使用者不应看到导出 SKILL.md');
     await shot(runner, 'ui-01-runner-skill-overview', true);
     await runner.goto(`${BASE}/workflows/wf_demo_sg_marketing_review`);
     await runner.waitForSelector('[data-testid=workflow-overview]');
@@ -318,8 +318,10 @@ function assert(cond, msg) {
     await rev.click('[data-testid=view-check]');
     await rev.locator('[data-testid=node-panel-check] [data-testid=review-accept]').first().click();
     await rev.waitForSelector('[data-testid=node-panel-check] .it.accepted');
-    const href = await rev.getAttribute('[data-testid=export-md]', 'href');
-    const md = await (await rev.request.get(BASE + href)).text();
+    // downloads go through fetch with this tab's own session, then save as a file
+    const [dl] = await Promise.all([rev.waitForEvent('download'), rev.click('[data-testid=export-md]')]);
+    assert(/\.md$/.test(dl.suggestedFilename()), dl.suggestedFilename());
+    const md = fs.readFileSync(await dl.path(), 'utf8');
     assert(md.includes('✓ 采纳') && md.includes('初审草稿') && md.includes('批准，复审截止'), '报告缺少复核、免责声明或规则包审核信息');
     fs.writeFileSync(path.join(EVIDENCE, 'sample-run-report.md'), md);
     return '报告含“✓ 采纳”、审批记录、规则包审核人与复审日期（已存 docs/evidence/sample-run-report.md）';
@@ -638,6 +640,125 @@ function assert(cond, msg) {
       fs.writeFileSync(path.join(outDir, `${name}.md`), md);
     }
     return `health=${h.status}，checks ${h.checks.length} 项；成功/失败/重试运行记录已导出到 docs/evidence/runs/`;
+  });
+
+  let chatRunId = '';
+  await scenario('21. 对话首页：发送材料 → 对话中实时打印运行过程 → 完成后结果保留 → 追问结果', async () => {
+    const runner = await as('runner');
+    await runner.goto(`${BASE}/`);
+    await runner.waitForSelector('[data-testid=chat-welcome]');
+    assert(await runner.isVisible('[data-testid=nav-chat]'), '左侧导航应有“对话”');
+    for (const sel of ['nav a[href="/workflows"]', 'nav a[href="/skills"]', 'nav a[href="/runs"]', 'nav a[href="/documents"]']) assert(await runner.$(sel), `左侧功能应保留：${sel}`);
+    await shot(runner, 'ui-28-chat-home');
+    await runner.click('[data-testid=chat-sample-sample_low_post]');
+    await runner.waitForFunction(() => document.querySelector('[data-testid=chat-input]').value.length > 50);
+    await runner.click('[data-testid=chat-send]');
+    await runner.waitForURL(/\/chat\/conv_/);
+    await runner.waitForSelector('[data-testid=chat-run-card]');
+    chatRunId = await runner.getAttribute('[data-testid=chat-run-card]', 'data-run-id');
+    // progress lines appear while the run is still going
+    await runner.waitForFunction(() => {
+      const card = document.querySelector('[data-testid=chat-run-card]');
+      return card && card.getAttribute('data-status') === 'running' && document.querySelectorAll('[data-testid=chat-run-log] li').length >= 4;
+    }, null, { timeout: LONG });
+    const liveLines = await runner.$$eval('[data-testid=chat-run-log] li', (lis) => lis.length);
+    await shot(runner, 'ui-29-chat-running');
+    await runner.hover('[data-testid=chat-node-extract]');
+    await runner.waitForSelector('[data-testid=chat-node-tip]');
+    const tip = await runner.textContent('[data-testid=chat-node-tip]');
+    assert(tip.includes('提取宣传声明'), tip);
+    await runner.mouse.move(2, 2);
+    await runner.waitForSelector('[data-testid=chat-run-card][data-status=succeeded]', { timeout: LONG });
+    await runner.waitForTimeout(3000);
+    assert(await runner.isVisible('[data-testid=chat-run-result]'), '完成 3 秒后结果仍应显示');
+    await shot(runner, 'ui-30-chat-result');
+    await runner.click('[data-testid=chat-ask]');
+    await runner.fill('[data-testid=chat-input]', '这份材料有哪些需要关注的地方？');
+    await runner.keyboard.press('Enter');
+    await runner.waitForSelector('[data-testid=chat-answer]', { timeout: LONG });
+    const answer = await runner.textContent('[data-testid=chat-answer]');
+    assert(REAL ? answer.trim().length > 20 : answer.includes('模拟模式回答'), answer.slice(0, 200));
+    await shot(runner, 'ui-31-chat-follow-up');
+    await runner.reload();
+    await runner.waitForSelector('[data-testid=chat-answer]');
+    await runner.waitForSelector('[data-testid=chat-run-card][data-status=succeeded] [data-testid=chat-run-result]');
+    return `运行中实时出现 ${liveLines} 条过程记录；悬停节点显示处理信息；完成 3 秒后结果仍在；追问得到回答；刷新后对话与结果仍在`;
+  });
+
+  await scenario('22. 运行页：运行过程实时打印、悬停流程节点查看处理信息、回放运行过程', async () => {
+    const runner = await as('runner');
+    await runner.goto(`${BASE}/workflows/wf_demo_sg_marketing_review/run`);
+    await runner.click('[data-testid=sample-sample_low_post]');
+    await runner.click('[data-testid=start-run]');
+    await runner.waitForURL(/\/runs\/run_/);
+    await runner.waitForFunction(() => document.querySelector('[data-testid=run-status]')?.getAttribute('data-status') === 'running' && document.querySelectorAll('[data-testid=process-log] li').length >= 4, null, { timeout: LONG });
+    const during = await runner.$$eval('[data-testid=process-log] li', (lis) => lis.length);
+    await shot(runner, 'ui-32-run-process-live');
+    await waitRunStatus(runner, ['succeeded', 'failed', 'waiting_approval']);
+    const runId = runner.url().split('/').pop();
+    const full = await api(runner, 'GET', `/api/runs/${runId}`);
+    await runner.waitForFunction((n) => document.querySelectorAll('[data-testid=process-log] li').length >= n, full.log.length);
+    await runner.hover('[data-testid=dag-node-check]');
+    await runner.waitForSelector('[data-testid=dag-tip]');
+    const tip = await runner.textContent('[data-testid=dag-tip]');
+    assert(tip.includes('对照规则检查') && /用时|已运行/.test(tip), tip);
+    await shot(runner, 'ui-33-run-node-tip');
+    await runner.mouse.move(2, 2);
+    await runner.click('[data-testid=replay-start]');
+    await runner.waitForSelector('[data-testid=replay-bar]');
+    await runner.click('[data-testid=replay-toggle]'); // pause
+    await runner.click('[data-testid=replay-first]');
+    assert((await runner.getAttribute('[data-testid=dag-node-memo]', 'data-status')) === 'pending', '回放开头：最后一个节点应为“等待”');
+    for (let i = 0; i < 6; i++) await runner.click('[data-testid=replay-next]');
+    const pos = await runner.textContent('[data-testid=replay-pos]');
+    assert(pos.startsWith('7/'), pos);
+    await shot(runner, 'ui-34-run-replay', true);
+    await runner.click('[data-testid=replay-end]');
+    assert((await runner.getAttribute('[data-testid=dag-node-memo]', 'data-status')) === full.nodes.memo.status, '回放结束：节点状态应与最终一致');
+    await runner.click('[data-testid=replay-stop]');
+    // a run recorded in the chat can be replayed from its card
+    await runner.goto(`${BASE}/runs/${chatRunId}?replay=1`);
+    await runner.waitForSelector('[data-testid=replay-bar]');
+    return `运行中已打印 ${during} 条，完成后共 ${full.log.length} 条；悬停节点显示开始时间、用时、轮次与最近步骤；回放可逐步前进/后退，流程图按回放位置着色`;
+  });
+
+  await scenario('23. 同一浏览器两个标签页分别登录不同角色：正在查看的运行结果不会消失', async () => {
+    const ctx = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
+    const t1 = await ctx.newPage();
+    t1.on('pageerror', (e) => pageErrors.push(`[tab1] ${e}`));
+    await t1.goto(BASE + '/');
+    await t1.click('[data-testid=fill-runner]');
+    await t1.click('[data-testid=login-submit]');
+    await t1.waitForSelector('[data-testid=chat-welcome]');
+    await t1.click('[data-testid=chat-sample-sample_high_edm]');
+    await t1.waitForFunction(() => document.querySelector('[data-testid=chat-input]').value.length > 50);
+    await t1.click('[data-testid=chat-send]');
+    await t1.waitForSelector('[data-testid=chat-run-card]');
+    const runId = await t1.getAttribute('[data-testid=chat-run-card]', 'data-run-id');
+    // tab 2 of the same browser: starts signed in (own session), then switches to the second reviewer
+    const t2 = await ctx.newPage();
+    t2.on('pageerror', (e) => pageErrors.push(`[tab2] ${e}`));
+    await t2.goto(BASE + '/runs');
+    await t2.waitForSelector('[data-testid=current-user]');
+    await t2.click('[data-testid=logout]');
+    await t2.click('[data-testid=fill-reviewer2]');
+    await t2.click('[data-testid=login-submit]');
+    await t2.waitForSelector('[data-testid=current-user]');
+    await t1.waitForSelector('[data-testid=chat-run-card][data-status=waiting_approval]', { timeout: LONG });
+    assert((await t1.textContent('.me-name')).includes('使用'), '标签页 1 仍应是使用者');
+    await t2.goto(`${BASE}/runs/${runId}`);
+    await t2.waitForSelector('[data-testid=approve-node]');
+    await t2.click('[data-testid=approve-node]');
+    await t1.waitForSelector('[data-testid=chat-run-card][data-status=succeeded]', { timeout: LONG });
+    await t1.waitForTimeout(3000);
+    assert(await t1.isVisible('[data-testid=chat-run-result]'), '标签页 1 的结果应保留');
+    await t1.goto(`${BASE}/runs/${runId}`);
+    await t1.waitForSelector('[data-testid=final-output] [data-testid=output-markdown]');
+    await t1.waitForTimeout(2000);
+    assert(!(await t1.$('[data-testid=refresh-error]')) && (await t1.isVisible('[data-testid=final-output]')), '运行页结果应保留');
+    assert((await t1.textContent('.me-name')).includes('使用'), '标签页 1 仍应是使用者');
+    await ctx.close();
+    return '标签页 2 退出并改用审核人登录、批准审批节点；标签页 1 仍是使用者，运行完成后结果一直显示（v3.1 中此时会变成“运行记录不存在”）';
   });
 
   await browser.close();

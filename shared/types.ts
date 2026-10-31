@@ -39,6 +39,8 @@ export interface Me {
   org: Org;
   /** Effective decision for UI gating, keyed by action. */
   can: Record<string, PermissionEffect>;
+  /** Only in the login response: the tab's own session token (sent back as `Authorization: Bearer`). */
+  sessionToken?: string;
 }
 
 // ───────────────────────── skills ─────────────────────────
@@ -553,9 +555,26 @@ export interface Run {
   rerunOf?: string;
   /** Retry of a failed run with the same versions; successful nodes were reused. */
   retryOf?: string;
+  /** Activity log ("运行过程"): printed live while the run executes and kept for replay. */
+  log?: RunLogEntry[];
   createdAt: string;
   startedAt?: string;
   finishedAt?: string;
+}
+
+export type RunLogKind = 'run' | 'node' | 'model' | 'tool' | 'result' | 'approval' | 'note' | 'error';
+
+/** One line of a run's activity log. `status` records the node / run state after the event (drives replay). */
+export interface RunLogEntry {
+  seq: number;
+  at: string;
+  kind: RunLogKind;
+  nodeId?: string;
+  status?: NodeStatus | RunStatus;
+  text: string;
+  detail?: string;
+  /** Rebuilt from a run recorded before activity logs existed; times are estimated. */
+  approx?: boolean;
 }
 
 /** accepted = finding is right; edited = right but corrected by the reviewer; rejected = wrong. */
@@ -615,7 +634,8 @@ export type RunEvent =
   | { type: 'node_status'; runId: string; nodeId: string; status: NodeStatus }
   | { type: 'transcript'; runId: string; nodeId: string; entry: TranscriptEntry }
   | { type: 'approval_requested'; runId: string; nodeId: string }
-  | { type: 'approval_decided'; runId: string; nodeId: string; decision: 'approved' | 'rejected' };
+  | { type: 'approval_decided'; runId: string; nodeId: string; decision: 'approved' | 'rejected' }
+  | { type: 'log'; runId: string; entry: RunLogEntry };
 
 export interface AuditEvent {
   id: string;
@@ -636,6 +656,51 @@ export interface SampleMaterial {
   inputs: Record<string, string>;
   /** Bundled file (PDF / Word / image) to upload as the material instead of text. */
   file?: string;
+}
+
+// ───────────────────────── conversations (chat home) ─────────────────────────
+export interface ChatAttachment {
+  documentId: string;
+  filename: string;
+  kind?: MaterialDocument['kind'];
+  pageCount?: number;
+}
+
+/** run = review new material with a workflow; ask = follow-up question about a run's results. */
+export type ChatMode = 'run' | 'ask';
+
+export type ConversationMessage =
+  | { id: string; role: 'user'; at: string; mode: ChatMode; text: string; attachments?: ChatAttachment[]; workflowId?: string; workflowName?: string; runId?: string }
+  | { id: string; role: 'assistant'; at: string; kind: 'run'; runId: string; workflowId: string; workflowName: string }
+  | { id: string; role: 'assistant'; at: string; kind: 'answer'; text: string; runId: string; provider: ProviderInfo; usage?: Usage; security?: SecurityReport; latencyMs?: number }
+  | { id: string; role: 'assistant'; at: string; kind: 'error'; text: string; code?: string; hint?: string; runId?: string };
+
+export interface Conversation {
+  id: string;
+  orgId: string;
+  /** Conversations are private to the user who created them. */
+  userId: string;
+  title: string;
+  /** Workflow used for the last "run" message (default for the next one). */
+  workflowId?: string;
+  messages: ConversationMessage[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ConversationSummary {
+  id: string;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+  messageCount: number;
+  lastText?: string;
+  runIds: string[];
+}
+
+export interface ChatSendResult {
+  conversation: Conversation;
+  run?: Run;
 }
 
 export interface PluginInfo {

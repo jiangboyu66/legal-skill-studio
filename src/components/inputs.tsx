@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react';
 import { splitHint } from '../../shared/hints';
 import type { DocumentSummary, InputField, SampleMaterial } from '../../shared/types';
-import { api, type InputValue } from '../api';
+import { api, type InputValue, openFile } from '../api';
 import { AutoTextarea, ErrorNotice, useLoad } from './ui';
 
 export type FormValue = string | { documentId: string; summary?: DocumentSummary };
@@ -25,11 +25,7 @@ export function DocumentCard({ doc, onClear }: { doc: DocumentSummary; onClear?:
           </span>
         </div>
         <div className="row">
-          {doc.kind !== 'text' && (
-            <a className="btn sm" href={api.documents.fileUrl(doc.id)} target="_blank" rel="noreferrer">
-              查看原件
-            </a>
-          )}
+          {doc.kind !== 'text' && <OpenOriginal id={doc.id} />}
           {onClear && (
             <button type="button" className="sm" onClick={onClear}>
               更换
@@ -46,6 +42,19 @@ export function DocumentCard({ doc, onClear }: { doc: DocumentSummary; onClear?:
         </ul>
       )}
     </div>
+  );
+}
+
+/** Opens the stored original in a new tab (fetched with this tab's session). */
+export function OpenOriginal({ id, label = '查看原件' }: { id: string; label?: string }) {
+  const [error, setError] = useState<unknown>();
+  return (
+    <>
+      <button type="button" className="btn sm" onClick={() => openFile(api.documents.fileUrl(id)).catch(setError)} data-testid="open-original">
+        {label}
+      </button>
+      {error ? <ErrorNotice error={error} /> : null}
+    </>
   );
 }
 

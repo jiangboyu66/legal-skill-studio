@@ -77,9 +77,27 @@ export class AuthService {
     return { token, user };
   }
 
-  logout(req: Request) {
-    const token = readCookie(req, COOKIE);
+  /**
+   * A browser tab that started from another tab's session (new tab opened from a link) gets its own session
+   * for the same user and expiry, so signing out or switching account in one tab leaves the others alone.
+   */
+  fork(req: Request): string {
+    const bearer = readBearer(req);
+    const s = bearer ? this.db.getSession(sha256(bearer)) : undefined;
+    if (!s || s.expiresAt <= Date.now()) throw Errors.unauthenticated();
+    const token = randomBytes(32).toString('base64url');
+    this.db.createSession(sha256(token), s.userId, s.expiresAt);
+    return token;
+  }
+
+  /** Ends the session of this browser tab (bearer token) or, without one, the cookie session. */
+  logout(req: Request, res: Response) {
+    const bearer = readBearer(req);
+    const cookie = readCookie(req, COOKIE);
+    const token = bearer ?? cookie;
     if (token) this.db.deleteSession(sha256(token));
+    // Another tab may be signed in through the shared cookie as someone else — only clear our own.
+    if (!bearer || bearer === cookie) this.clearCookie(res);
   }
 
   setCookie(res: Response, token: string) {
@@ -89,9 +107,15 @@ export class AuthService {
     res.setHeader('set-cookie', `${COOKIE}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0`);
   }
 
-  /** Resolves the session cookie into req.auth (does not reject anonymous requests). */
+  /**
+   * Resolves the session into req.auth (does not reject anonymous requests). A bearer token (one per browser
+   * tab, kept in sessionStorage) wins over the cookie, so several accounts can be used side by side in one
+   * browser; when a bearer token is sent but invalid, the cookie is NOT used as a fallback.
+   */
   middleware = (req: Request, _res: Response, next: NextFunction) => {
-    const token = readCookie(req, COOKIE);
+    const bearer = readBearer(req);
+    // The web app sends x-session-mode: tab — such a tab is signed in only through its own token.
+    const token = req.headers['x-session-mode'] === 'tab' ? bearer : bearer ?? readCookie(req, COOKIE);
     if (token) {
       const s = this.db.getSession(sha256(token));
       if (s && s.expiresAt > Date.now()) {
@@ -104,6 +128,12 @@ export class AuthService {
     }
     next();
   };
+}
+
+function readBearer(req: Request): string | undefined {
+  const h = req.headers.authorization;
+  const m = typeof h === 'string' ? /^Bearer\s+([A-Za-z0-9_-]{20,200})$/.exec(h.trim()) : null;
+  return m?.[1];
 }
 
 export function requireAuth(req: Request): AuthContext {

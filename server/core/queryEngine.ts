@@ -30,6 +30,8 @@ export interface QueryEngineConfig {
   budgetUsd?: number;
   priceFn?: (u: Usage) => number | undefined;
   onTranscript?: (e: TranscriptEntry) => void;
+  /** Called right before each model request (progress display: "waiting for the model"). */
+  onModelCall?: (turn: number) => void;
   /** Applied to every transcript entry before it is recorded or streamed (e.g. to redact a leaked system prompt). */
   scrub?: (e: TranscriptEntry) => TranscriptEntry;
   hints?: MockHints;
@@ -111,10 +113,14 @@ export class QueryEngine {
 
   private async call(tools?: ToolSchema[]): Promise<CompletionResult> {
     try {
+      this.cfg.onModelCall?.(this.turns);
       const { result, attempts } = await completeWithRetry(
         this.cfg.provider,
         { system: this.cfg.system, messages: this.messages, tools, maxTokens: this.cfg.maxTokens, wantJson: !!this.cfg.outputFields, hints: this.cfg.hints },
-        this.cfg.retry,
+        {
+          ...this.cfg.retry,
+          onRetry: (attempt, err) => this.emit({ type: 'note', turn: this.turns, message: `模型调用失败（${err.message}），正在第 ${attempt + 1} 次尝试` }),
+        },
       );
       this.attempts += attempts;
       this.model = result.model;

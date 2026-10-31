@@ -20,7 +20,11 @@ Legal Skill Studio：让法务团队自建 AI Skill，组合成 DAG 工作流并
 - 错误统一用 `AppError(code, 中文说明, { hint })`；新增错误码同时更新 docs/04 §3.3 的对应表。
 - 先写能复现问题的测试，再改实现；修改行为时同步更新受影响的测试与文档，而不是删除断言。
 - 界面文字用简体中文；代码注释用英文。
-- 前端渲染 AI 输出只能用 `OutputView` / `SafeMarkdown`（不加载外部图片）。
+- 前端渲染 AI 输出只能用 `OutputView` / `SafeMarkdown`（不加载外部图片），并放在 `ErrorBoundary` 里（格式化失败时显示原始结果，不能整页空白）。
+- 运行状态的展示统一用 `useRunLive`（`src/components/runLive.ts`）：推送事件只在本地追加日志与过程记录，状态变化一律重新加载；刷新失败只提示、不清空已显示的内容；已结束的运行不能被旧响应改回“运行中”。
+- 引擎每新增一类步骤，都通过 `WorkflowEngine.log()` 写一条中文“运行过程”记录（会实时推送并随运行保存）。
+- 会话按标签页：网页请求带 `x-session-mode: tab` 与 `Authorization: Bearer`（`src/api.ts`）；下载与打开原件用 `download()` / `openFile()`，不要写直接指向 `/api/` 的链接（会带上别的标签页的 Cookie）。
+- 对话追问等新的模型调用路径要走 `executeSkill`（见 `server/core/chat.ts` 的 `QA_SKILL` + `RESULT_QA` 代理），复用守卫。
 - 输入框：说明写在框下方的 `field-help`，placeholder 只放简短示例（≤ 24 字，见 `shared/hints.ts`）；多行文本用 `AutoTextarea`；不要用 `window.prompt`。
 - 测试账号的密码在 `server/seed/index.ts` 的 `DEMO_USERS` 中，每个角色一个；改动时同步 README 的账号表。
 - 重大取舍写 ADR（`docs/adr/`）。
@@ -41,6 +45,6 @@ npm run demo:real      # 配置密钥后跑一次真实模型演示
 - `server/core/`：代理主循环、工具、提示词、守卫（`security.ts`）、核验、评测与优化、工作流引擎、治理
 - `server/services/`：模型适配器、文档解析与 OCR、存储（含加密）、鉴权、保留期
 - `server/routes/`：HTTP 接口
-- `src/`：React 界面
+- `src/`：React 界面（首页对话 `src/pages/Chat.tsx`；运行页 `src/pages/RunDetail.tsx`）
 - `tests/`：自动化测试；`scripts/`：e2e、评测、演示、密钥扫描
 - `docs/`：需求、调研、计划、验证、架构、ADR、AI 使用说明

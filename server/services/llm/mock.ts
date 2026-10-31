@@ -162,6 +162,60 @@ function mockOptimizerCandidate(h: MockHints): Record<string, unknown> {
   };
 }
 
+const STATUS_ZH: Record<string, string> = { succeeded: '已完成', failed: '失败', rejected: '在审批节点被驳回', running: '运行中', waiting_approval: '等待审批', queued: '排队中' };
+
+/**
+ * Mock "result-qa" (chat follow-up): restates the run result the agent was given, so the chat flow can be
+ * demonstrated without a model. Clearly labelled; it does not analyse anything.
+ */
+export function mockQaAnswer(h: MockHints): string {
+  const q = (h.inputs.question ?? '').replace(/\s+/g, ' ').trim();
+  const lines = ['> ⚠️ 模拟模式回答：未调用真实模型，以下内容由程序根据运行结果拼装，仅用于演示对话流程。', '', `**你的问题**：${q.slice(0, 200)}`, ''];
+  let data: { status?: string; error?: string; final_output?: unknown; final_output_node?: string; nodes?: { name?: string; output?: unknown }[]; human_review?: unknown[]; missed_by_ai?: unknown[] } | undefined;
+  try {
+    data = JSON.parse(h.inputs.run_result ?? '');
+  } catch {
+    data = undefined;
+  }
+  if (!data) return [...lines, '（无法读取运行结果。）'].join('\n');
+  lines.push(`这次运行的状态：${STATUS_ZH[data.status ?? ''] ?? data.status ?? '未知'}${data.error ? `（${data.error}）` : ''}。`);
+  const out = data.final_output;
+  if (typeof out === 'string' && out.trim()) {
+    const first = out.split('\n').map((l) => l.trim()).find((l) => l && !/^[>#|*-]/.test(l)) ?? '';
+    lines.push('', `最终结果是${data.final_output_node ? `「${data.final_output_node}」生成的` : ''}一份文字报告（约 ${out.length} 字）${first ? `，开头：“${first.slice(0, 60)}”` : ''}。`);
+  } else if (out === undefined || out === null) lines.push('', '这次运行没有最终结果。');
+  // numbered findings: in the final result, or in the step that produced them
+  const sources: [string | undefined, unknown][] = [[undefined, out], ...(data.nodes ?? []).map((n) => [n.name, n.output] as [string | undefined, unknown])];
+  const lists = sources.flatMap(([from, v]) =>
+    v && typeof v === 'object' && !Array.isArray(v)
+      ? Object.entries(v as Record<string, unknown>)
+          .filter(([, x]) => Array.isArray(x) && x.length > 0 && typeof x[0] === 'object')
+          .map(([key, x]) => ({ from, key, rows: x as Record<string, unknown>[] }))
+      : [],
+  );
+  // prefer the findings / issues list over e.g. the extracted claims
+  const found = lists.find((l) => /finding|issue|problem|risk/i.test(l.key)) ?? lists[0];
+  if (found) {
+    const rows = found.rows;
+    const want = /#\s?(\d{1,3})|第\s?(\d{1,3})\s?[条项个]/.exec(q);
+    const n = want ? Number(want[1] ?? want[2]) : 0;
+    const show = n >= 1 && n <= rows.length ? [[n - 1, rows[n - 1]] as const] : rows.slice(0, 3).map((r, i) => [i, r] as const);
+    lines.push('', `${found.from ? `「${found.from}」的结果` : '最终结果'}中有 ${rows.length} 条「${found.key}」${n ? `，你问到的是第 ${n} 条` : '，前几条是'}：`);
+    for (const [i, row] of show) {
+      const rule = Object.entries(row).find(([k]) => /rule|clause/i.test(k))?.[1];
+      const quote = Object.entries(row).find(([k]) => /quote|evidence|excerpt/i.test(k))?.[1];
+      const issue = Object.entries(row).find(([k]) => /issue|problem|finding|conclusion|reason|risk_description/i.test(k))?.[1];
+      lines.push(`${i + 1}. ${rule ? `[${String(rule)}] ` : ''}${issue ? String(issue).slice(0, 120) : ''}${quote ? ` —— 原文：“${String(quote).slice(0, 80)}”` : ''}`);
+    }
+  } else if (out && typeof out === 'object') lines.push('', `最终结果：${JSON.stringify(out).slice(0, 300)}`);
+  else if (data.status === 'succeeded') lines.push('', '各步骤都没有列出具体问题。');
+  const reviewed = data.human_review?.length ?? 0;
+  const missed = data.missed_by_ai?.length ?? 0;
+  if (reviewed || missed) lines.push('', `人工复核记录：${reviewed} 条标记，${missed} 条补充的漏项。`);
+  lines.push('', '配置真实模型密钥（如 DEEPSEEK_API_KEY）后，这里会结合运行结果、原始材料和规则包给出具体解释。');
+  return lines.join('\n');
+}
+
 /** Appends `extra` to the first string value found (depth-first) — used by the LEAK marker. */
 function appendToFirstString(v: unknown, extra: string): boolean {
   if (!v || typeof v !== 'object') return false;
@@ -216,7 +270,8 @@ export class MockProvider implements LLMProvider {
           else if (turn === 0 && tools.has('search_document') && g.keyword()) content = [toolUse('search_document', { query: g.keyword() })];
           else content = [toolUse('submit_output', value)];
         } else content = [{ type: 'text', text: JSON.stringify(value, null, 2) }];
-      } else content = [{ type: 'text', text: `${g.markdown()}${leak ? `\n\n${leak}` : ''}` }];
+      } else if (h.agentType === 'result-qa') content = [{ type: 'text', text: `${mockQaAnswer(h)}${leak ? `\n\n${leak}` : ''}` }];
+      else content = [{ type: 'text', text: `${g.markdown()}${leak ? `\n\n${leak}` : ''}` }];
     }
     const chars = req.system.reduce((n, s) => n + s.text.length, 0) + JSON.stringify(req.messages).length;
     return {

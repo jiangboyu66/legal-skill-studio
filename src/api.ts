@@ -1,5 +1,9 @@
 import type {
   AuditEvent,
+  ChatMode,
+  ChatSendResult,
+  Conversation,
+  ConversationSummary,
   DemoAccounts,
   DocumentSummary,
   EvalRun,
@@ -12,6 +16,7 @@ import type {
   OptimizationRun,
   OrgPolicy,
   PlatformInfo,
+  RunEvent,
   ReviewDecision,
   ReviewDetail,
   ReviewInbox,
@@ -52,6 +57,47 @@ export const setUnauthenticatedHandler = (fn: () => void) => {
   onUnauthenticated = fn;
 };
 
+// ── Per-tab sessions ──
+// Each browser tab keeps its own session token (sessionStorage) and sends it as a bearer token, so a
+// reviewer and a runner can be signed in side by side in two tabs of one browser. A new tab starts with
+// the most recent login. The server ignores the shared cookie for requests marked x-session-mode: tab.
+const TAB_KEY = 'lss.session';
+const LAST_KEY = 'lss.lastSession';
+/** This tab started from the most recent login of another tab; it trades that for a session of its own. */
+let inherited = false;
+let token: string | null = (() => {
+  try {
+    const own = sessionStorage.getItem(TAB_KEY);
+    if (own) return own;
+    const last = localStorage.getItem(LAST_KEY);
+    if (last) {
+      inherited = true;
+      sessionStorage.setItem(TAB_KEY, last);
+    }
+    return last;
+  } catch {
+    return null;
+  }
+})();
+
+function setSessionToken(t: string | null, opts: { tabOnly?: boolean } = {}) {
+  const prev = token;
+  token = t;
+  try {
+    if (t) {
+      sessionStorage.setItem(TAB_KEY, t);
+      if (!opts.tabOnly) localStorage.setItem(LAST_KEY, t);
+    } else {
+      sessionStorage.removeItem(TAB_KEY);
+      if (prev && localStorage.getItem(LAST_KEY) === prev) localStorage.removeItem(LAST_KEY);
+    }
+  } catch {
+    /* storage unavailable: the token lives in memory for this page */
+  }
+}
+
+const sessionHeaders = (): Record<string, string> => ({ 'x-session-mode': 'tab', ...(token ? { authorization: `Bearer ${token}` } : {}) });
+
 async function parse<T>(res: Response, url: string): Promise<T> {
   const text = await res.text();
   let data: unknown = null;
@@ -62,7 +108,10 @@ async function parse<T>(res: Response, url: string): Promise<T> {
   }
   if (!res.ok) {
     const e = ((data as { error?: Record<string, unknown> })?.error ?? {}) as Record<string, unknown>;
-    if (res.status === 401 && !url.startsWith('/api/auth/')) onUnauthenticated();
+    if (res.status === 401 && !url.startsWith('/api/auth/')) {
+      setSessionToken(null);
+      onUnauthenticated();
+    }
     throw new ApiError(String(e.code ?? `HTTP_${res.status}`), String(e.message ?? `请求失败（HTTP ${res.status}）`), e.hint as string | undefined, res.status, e.details);
   }
   return data as T;
@@ -75,7 +124,7 @@ async function req<T>(method: string, url: string, body?: unknown): Promise<T> {
       method,
       credentials: 'same-origin',
       // Custom header required by the server's CSRF guard for state-changing requests.
-      headers: { 'x-requested-with': 'lss', ...(body !== undefined ? { 'content-type': 'application/json' } : {}) },
+      headers: { 'x-requested-with': 'lss', ...sessionHeaders(), ...(body !== undefined ? { 'content-type': 'application/json' } : {}) },
       body: body !== undefined ? JSON.stringify(body) : undefined,
     });
   } catch {
@@ -87,11 +136,85 @@ async function req<T>(method: string, url: string, body?: unknown): Promise<T> {
 async function upload<T>(url: string, file: Blob): Promise<T> {
   let res: Response;
   try {
-    res = await fetch(url, { method: 'POST', credentials: 'same-origin', headers: { 'x-requested-with': 'lss', 'content-type': 'application/octet-stream' }, body: file });
+    res = await fetch(url, { method: 'POST', credentials: 'same-origin', headers: { 'x-requested-with': 'lss', ...sessionHeaders(), 'content-type': 'application/octet-stream' }, body: file });
   } catch {
     throw new ApiError('NETWORK', '上传失败：无法连接服务器。');
   }
   return parse<T>(res, url);
+}
+
+/** Downloads a file with this tab's session (a plain link would use another tab's cookie). */
+export async function download(url: string, fallbackName: string) {
+  const res = await fetch(url, { headers: sessionHeaders() });
+  if (!res.ok) await parse(res, url);
+  const blob = await res.blob();
+  const name = /filename="([^"]+)"/.exec(res.headers.get('content-disposition') ?? '')?.[1] ?? fallbackName;
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 60_000);
+}
+
+/** Opens a stored original (PDF / image) in a new tab with this tab's session. */
+export async function openFile(url: string) {
+  const w = window.open('', '_blank');
+  try {
+    const res = await fetch(url, { headers: sessionHeaders() });
+    if (!res.ok) await parse(res, url);
+    const href = URL.createObjectURL(await res.blob());
+    if (w) w.location.href = href;
+    else window.location.href = href;
+  } catch (e) {
+    w?.close();
+    throw e;
+  }
+}
+
+/**
+ * Server-sent run events over fetch (EventSource cannot send this tab's session header).
+ * Returns a function that closes the stream.
+ */
+export function streamRunEvents(runId: string, h: { onOpen?: () => void; onEvent: (e: RunEvent) => void; onClose?: (err?: unknown) => void }): () => void {
+  const ctrl = new AbortController();
+  (async () => {
+    try {
+      const res = await fetch(`/api/runs/${runId}/events`, { headers: { ...sessionHeaders(), accept: 'text/event-stream' }, signal: ctrl.signal });
+      if (!res.ok || !res.body) throw new ApiError(`HTTP_${res.status}`, '实时连接失败');
+      h.onOpen?.();
+      const reader = res.body.getReader();
+      const dec = new TextDecoder();
+      let buf = '';
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true }).replace(/\r\n/g, '\n');
+        let cut: number;
+        while ((cut = buf.indexOf('\n\n')) >= 0) {
+          const block = buf.slice(0, cut);
+          buf = buf.slice(cut + 2);
+          let event = 'message';
+          const data: string[] = [];
+          for (const line of block.split('\n')) {
+            if (line.startsWith('event:')) event = line.slice(6).trim();
+            else if (line.startsWith('data:')) data.push(line.slice(5).replace(/^ /, ''));
+          }
+          if (event !== 'message' || !data.length) continue;
+          try {
+            h.onEvent(JSON.parse(data.join('\n')) as RunEvent);
+          } catch {
+            /* ignore a malformed event */
+          }
+        }
+      }
+      if (!ctrl.signal.aborted) h.onClose?.();
+    } catch (err) {
+      if (!ctrl.signal.aborted) h.onClose?.(err);
+    }
+  })();
+  return () => ctrl.abort();
 }
 
 const q = (params: Record<string, string | undefined>) => {
@@ -106,9 +229,32 @@ export const api = {
   samples: () => req<SampleMaterial[]>('GET', '/api/samples'),
   sampleDocument: (id: string) => req<DocumentSummary>('POST', `/api/samples/${id}/document`),
   auth: {
-    me: () => req<Me>('GET', '/api/auth/me'),
-    login: (email: string, password: string) => req<Me>('POST', '/api/auth/login', { email, password }),
-    logout: () => req<{ ok: true }>('POST', '/api/auth/logout'),
+    me: async () => {
+      if (inherited && token) {
+        inherited = false;
+        try {
+          const r = await req<{ sessionToken?: string }>('POST', '/api/auth/fork');
+          if (r.sessionToken) setSessionToken(r.sessionToken, { tabOnly: true });
+        } catch {
+          /* the inherited session has ended: /me below reports it */
+        }
+      }
+      return req<Me>('GET', '/api/auth/me');
+    },
+    login: async (email: string, password: string) => {
+      const me = await req<Me>('POST', '/api/auth/login', { email, password });
+      if (me.sessionToken) setSessionToken(me.sessionToken);
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      const { sessionToken, ...rest } = me;
+      return rest as Me;
+    },
+    logout: async () => {
+      try {
+        return await req<{ ok: true }>('POST', '/api/auth/logout');
+      } finally {
+        setSessionToken(null);
+      }
+    },
     demoAccounts: () => req<DemoAccounts>('GET', '/api/auth/demo-accounts'),
   },
   skills: {
@@ -177,6 +323,15 @@ export const api = {
       req<Record<string, ReviewMark>>('PUT', `/api/runs/${id}/reviews`, { nodeId, location, decision, note, edits }),
     exportUrl: (id: string, format: 'md' | 'json') => `/api/runs/${id}/export?format=${format}`,
     eventsUrl: (id: string) => `/api/runs/${id}/events`,
+  },
+  conversations: {
+    list: () => req<ConversationSummary[]>('GET', '/api/conversations'),
+    create: (body: { title?: string; workflowId?: string } = {}) => req<Conversation>('POST', '/api/conversations', body),
+    get: (id: string) => req<Conversation>('GET', `/api/conversations/${id}`),
+    update: (id: string, body: { title?: string; workflowId?: string }) => req<Conversation>('PATCH', `/api/conversations/${id}`, body),
+    remove: (id: string) => req<{ ok: true }>('DELETE', `/api/conversations/${id}`),
+    send: (id: string, body: { mode: ChatMode; text: string; workflowId?: string; attachments?: { documentId: string }[]; inputs?: Record<string, string>; runId?: string; rerunOf?: string }) =>
+      req<ChatSendResult>('POST', `/api/conversations/${id}/messages`, body),
   },
   admin: {
     users: () => req<User[]>('GET', '/api/admin/users'),
