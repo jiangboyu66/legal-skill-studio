@@ -1,0 +1,158 @@
+{
+  "key": "sg-marketing",
+  "name": "新加坡营销物料规则包（示例）",
+  "jurisdiction": "SG",
+  "description": "整理自公开资料的新加坡营销合规检查规则，供原型测试。每条规则标注来源与核实程度；必须由组织的法律审核人逐条核对并批准后才能用于正式运行。",
+  "content": {
+    "notes": "Paraphrased summaries for screening purposes, not the authoritative text. Use rule ID N/A when an issue is not covered by this pack.",
+    "rules": [
+      {
+        "id": "SCAP-01",
+        "title": "Overall standard",
+        "text": "Advertisements should be legal, decent, honest and truthful.",
+        "severity": "medium",
+        "category": "ASAS SCAP",
+        "source": { "title": "ASAS — Singapore Code of Advertising Practice (basic premise)", "url": "https://asas.org.sg/", "excerpt": "all advertisements should be legal, decent, honest and truthful", "verification": "verbatim" }
+      },
+      {
+        "id": "SCAP-02",
+        "title": "No misleading content",
+        "text": "An advertisement must not mislead through inaccuracy, ambiguity, exaggeration or omission — including about the price, the total price payable, terms, guarantees, delivery, exchanges or returns.",
+        "severity": "medium",
+        "category": "ASAS SCAP",
+        "source": { "title": "SCAP Chapter II clause 5.1 Truthful presentation (as cited by ASAS)", "url": "https://asaswebsite.azurewebsites.net/Resources/CPFTA", "excerpt": "should not mislead in any way by inaccuracy, ambiguity, exaggeration, omission", "verification": "verbatim" }
+      },
+      {
+        "id": "SCAP-03",
+        "title": "Research, statistics and scientific language",
+        "text": "Do not misuse research results or quotations from technical or scientific publications, present statistics as more valid than they are, or use scientific terms or jargon to suggest a scientific basis that does not exist (e.g. \"clinically proven\" without a study).",
+        "severity": "high",
+        "category": "ASAS SCAP",
+        "source": { "title": "SCAP Chapter II clause 5.3 (as summarised on the ASAS website)", "url": "https://asaswebsite.azurewebsites.net/Resources/CPFTA", "verification": "paraphrased" }
+      },
+      {
+        "id": "SCAP-04",
+        "title": "Substantiation of objective claims",
+        "text": "Claims capable of objective verification — superlatives (\"No.1\", \"best\"), performance, durability, efficacy or health claims, user numbers — need documentary evidence held before publication. Ask the marketing team for the evidence.",
+        "severity": "medium",
+        "category": "ASAS SCAP",
+        "source": { "title": "SCAP substantiation provisions (clause number to be verified by reviewer)", "url": "https://asas.org.sg/", "verification": "unverified" }
+      },
+      {
+        "id": "SCAP-05",
+        "title": "Testimonials and endorsements",
+        "text": "Testimonials must be genuine, current and reflect the typical experience of ordinary users; endorsements by professionals (e.g. a doctor) must be verifiable and relevant.",
+        "severity": "medium",
+        "category": "ASAS SCAP",
+        "source": { "title": "SCAP testimonial provisions (secondary source; clause to be verified)", "url": "https://asas.org.sg/", "verification": "paraphrased" }
+      },
+      {
+        "id": "SOCIAL-01",
+        "title": "Identifiable advertising on social media",
+        "text": "Marketing communication must be identifiable as such and distinguished from editorial content or personal opinion; sponsored content must be disclosed clearly and prominently (e.g. \"Sponsored\", \"Ad\").",
+        "severity": "medium",
+        "category": "ASAS Guidelines",
+        "appliesTo": { "channels": ["social", "web"] },
+        "source": { "title": "ASAS Guidelines on Interactive Marketing Communication & Social Media (2016), via law-firm summary", "url": "https://marketinglaw.osborneclarke.com/advertising-regulation/new-regulatory-guidelines-applicable-online-advertising-marketing-communication-interactive-social-media-singapore/", "verification": "paraphrased" }
+      },
+      {
+        "id": "CPFTA-01",
+        "title": "False characteristics or benefits",
+        "text": "Do not represent goods or services as having characteristics, approvals, performance or benefits they do not have.",
+        "severity": "high",
+        "category": "CPFTA",
+        "source": { "title": "Consumer Protection (Fair Trading) Act 2003, Second Schedule para 1 (CCCS list of unfair practices)", "url": "https://cccs.gov.sg/-/media/custom/ccs/files/legislation/cpfta/list_of_unfair_trade_practices_under_cpfta.ashx", "verification": "paraphrased" }
+      },
+      {
+        "id": "CPFTA-02",
+        "title": "False time-limited offers",
+        "text": "Do not claim that a discount is available only for a stated (limited) period if the supplier knows it will continue for substantially longer (false urgency).",
+        "severity": "high",
+        "category": "CPFTA",
+        "source": { "title": "CPFTA Second Schedule para 18 (as described in CCCS enforcement releases)", "url": "https://cccs.gov.sg/media-and-consultation/newsroom/media-releases/charcoal-thai-1-ends-unfair-practice-16-aug-19", "verification": "paraphrased" }
+      },
+      {
+        "id": "CPFTA-03",
+        "title": "Material facts and small print",
+        "text": "Do not omit a material fact, use small print to conceal it, or mislead consumers as to a material fact (e.g. key conditions hidden behind an asterisk that contradict the headline).",
+        "severity": "high",
+        "category": "CPFTA",
+        "source": { "title": "CPFTA Second Schedule para 20 (CCCS list of unfair practices)", "url": "https://cccs.gov.sg/-/media/custom/ccs/files/legislation/cpfta/list_of_unfair_trade_practices_under_cpfta.ashx", "excerpt": "using small print to conceal a material fact from the consumer", "verification": "verbatim" }
+      },
+      {
+        "id": "PRICE-01",
+        "title": "Price transparency",
+        "text": "Headline prices should include unavoidable or mandatory charges (no drip pricing); price comparisons (\"was $X\") and discounts must be genuine and verifiable; use \"free\" only where the item is genuinely free, with conditions clearly disclosed.",
+        "severity": "high",
+        "category": "CCCS Guidelines",
+        "source": { "title": "CCCS Guidelines on Price Transparency (effective 1 Nov 2020)", "url": "https://www.ccs.gov.sg/consumer-protection/legislation-and-guidelines/guidelines-on-price-transparency/", "excerpt": "unavoidable or mandatory charges … are included in the total headline price", "verification": "verbatim" }
+      },
+      {
+        "id": "NRIC-01",
+        "title": "Collection of NRIC numbers",
+        "text": "Organisations are generally not allowed to collect, use or disclose NRIC numbers (or copies of NRIC). Collecting full NRIC numbers for lucky draws, membership sign-ups or promotions should be avoided; use alternatives (e.g. mobile number, partial NRIC).",
+        "severity": "high",
+        "category": "PDPA",
+        "source": { "title": "PDPC Advisory Guidelines for NRIC and other National Identification Numbers (effective 1 Sep 2019)", "url": "https://www.pdpc.gov.sg/-/media/Files/PDPC/PDF-Files/Advisory-Guidelines/Advisory-Guidelines-for-NRIC-Numbers---310818.pdf", "excerpt": "generally not allowed to collect, use or disclose NRIC numbers", "verification": "verbatim" }
+      },
+      {
+        "id": "PDPA-01",
+        "title": "Purpose notice and consent",
+        "text": "Where the material collects personal data (sign-up forms, contests), tell individuals the purposes and obtain their consent.",
+        "severity": "medium",
+        "category": "PDPA",
+        "source": { "title": "PDPA Consent and Notification Obligations (general summary; sections to be verified)", "url": "https://www.pdpc.gov.sg/", "verification": "unverified" }
+      },
+      {
+        "id": "PDPA-02",
+        "title": "Do Not Call Registry",
+        "text": "Before sending marketing messages (voice calls, SMS/MMS, fax — including messaging apps addressed to Singapore numbers) to Singapore telephone numbers, check the DNC Registry unless there is clear and unambiguous consent in written or other accessible form; identify the sender.",
+        "severity": "high",
+        "category": "PDPA",
+        "appliesTo": { "channels": ["sms", "voice", "messaging"] },
+        "source": { "title": "PDPC — Do Not Call Registry & Your Business", "url": "https://pdpc.gov.sg/Overview-of-PDPA/Do-Not-Call-Registry/Business-Owner/Do-Not-Call-Registry-and-Your-Business", "excerpt": "prohibits organisations from sending marketing messages to Singapore telephone numbers listed in the DNC Registry", "verification": "verbatim" }
+      },
+      {
+        "id": "SPAM-01",
+        "title": "Bulk unsolicited commercial e-mail / SMS",
+        "text": "Unsolicited commercial electronic messages sent in bulk must carry an \"<ADV>\" label (bulk commercial e-mail subjects should begin with \"<ADV> \") and an unsubscribe facility; subject lines and headers must not mislead.",
+        "severity": "high",
+        "category": "Spam Control Act",
+        "appliesTo": { "channels": ["email", "sms", "messaging"] },
+        "source": { "title": "IMDA — Best practices for organisations (Spam Control Act 2007)", "url": "https://imda.gov.sg/infocomm-regulation-and-guides/unsolicited-communications/best-practices-for-organisations", "excerpt": "use of labels <ADV> … and to offer an unsubscribe option", "verification": "verbatim" }
+      },
+      {
+        "id": "INT-01",
+        "title": "Promotion terms (internal policy)",
+        "text": "Every promotion must link to the full T&Cs and state the promotion period with start and end dates.",
+        "severity": "low",
+        "category": "Internal policy (example)",
+        "source": { "title": "Example company policy — replace with your own", "verification": "unverified" }
+      },
+      {
+        "id": "INT-02",
+        "title": "Competitors (internal policy)",
+        "text": "Do not name or disparage competitors or their products.",
+        "severity": "medium",
+        "category": "Internal policy (example)",
+        "source": { "title": "Example company policy — replace with your own", "verification": "unverified" }
+      },
+      {
+        "id": "INT-03",
+        "title": "Health claims (internal policy)",
+        "text": "No health or medical benefit claims for non-health products without Legal sign-off.",
+        "severity": "high",
+        "category": "Internal policy (example)",
+        "source": { "title": "Example company policy — replace with your own", "verification": "unverified" }
+      },
+      {
+        "id": "INT-04",
+        "title": "Maximum discounts (internal policy)",
+        "text": "Any maximum discount figure must be qualified with \"up to\" unless it applies to every item, and must state which items it applies to.",
+        "severity": "low",
+        "category": "Internal policy (example)",
+        "source": { "title": "Example company policy — replace with your own", "verification": "unverified" }
+      }
+    ]
+  }
+}

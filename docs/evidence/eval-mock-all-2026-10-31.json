@@ -1,0 +1,709 @@
+{
+  "id": "evl_f563d55b",
+  "orgId": "org_demo",
+  "skillId": "skl_demo_rule_check",
+  "skillName": "新加坡营销合规规则检查",
+  "evalSetId": "sg-marketing-rule-check-v1",
+  "version": "draft",
+  "configHash": "32c6444ad42b",
+  "split": "all",
+  "status": "succeeded",
+  "provider": {
+    "name": "mock",
+    "model": "mock-legal-v2",
+    "mode": "mock",
+    "vision": false
+  },
+  "rulePacks": [
+    {
+      "id": "rp_demo_sg_marketing",
+      "name": "新加坡营销物料规则包（示例）",
+      "version": "draft",
+      "status": "in_review"
+    }
+  ],
+  "startedBy": "usr_builder",
+  "startedByName": "林创建（创建者）",
+  "createdAt": "2026-10-31T07:59:52.470Z",
+  "progress": {
+    "done": 10,
+    "total": 10
+  },
+  "cases": [
+    {
+      "caseId": "T01",
+      "title": "高风险床垫 EDM（多类问题）",
+      "split": "train",
+      "tags": [
+        "edm",
+        "superlative",
+        "health",
+        "price",
+        "urgency",
+        "testimonial",
+        "competitor",
+        "pdpa",
+        "spam"
+      ],
+      "usage": {
+        "inputTokens": 10122,
+        "outputTokens": 865
+      },
+      "latencyMs": 80,
+      "ok": true,
+      "findings": 10,
+      "expected": 14,
+      "matched": [
+        "T01-1",
+        "T01-3",
+        "T01-7"
+      ],
+      "missed": [
+        {
+          "id": "T01-2",
+          "description": "“50,000+ 用户”数量声明需要证明",
+          "rules": [
+            "SCAP-04",
+            "SCAP-02"
+          ]
+        },
+        {
+          "id": "T01-4",
+          "description": "原价/现价对比的真实性",
+          "rules": [
+            "PRICE-01",
+            "SCAP-02"
+          ]
+        },
+        {
+          "id": "T01-5",
+          "description": "“仅限今天”与活动期 1–15 Nov 矛盾（虚假紧迫）",
+          "rules": [
+            "CPFTA-02",
+            "SCAP-02"
+          ]
+        },
+        {
+          "id": "T01-6",
+          "description": "“免费配送”与小字中的运费条件矛盾",
+          "rules": [
+            "PRICE-01",
+            "CPFTA-03",
+            "SCAP-02"
+          ]
+        },
+        {
+          "id": "T01-8",
+          "description": "医生背书/证言需核实",
+          "rules": [
+            "SCAP-05"
+          ]
+        },
+        {
+          "id": "T01-9",
+          "description": "点名贬低竞争对手",
+          "rules": [
+            "INT-02",
+            "SCAP-02"
+          ]
+        },
+        {
+          "id": "T01-10",
+          "description": "“终身耐用”无依据",
+          "rules": [
+            "SCAP-04",
+            "SCAP-02",
+            "CPFTA-01"
+          ]
+        },
+        {
+          "id": "T01-11",
+          "description": "抽奖收集完整 NRIC 号码",
+          "rules": [
+            "NRIC-01",
+            "PDPA-01"
+          ]
+        },
+        {
+          "id": "T01-12",
+          "description": "通过短信/WhatsApp 营销需查 DNC 或取得同意",
+          "rules": [
+            "PDPA-02"
+          ]
+        },
+        {
+          "id": "T01-13",
+          "description": "批量营销邮件缺少退订方式与 <ADV> 标签",
+          "rules": [
+            "SPAM-01"
+          ]
+        },
+        {
+          "id": "T01-14",
+          "description": "未链接完整条款（Other T&Cs apply）",
+          "rules": [
+            "INT-01",
+            "CPFTA-03"
+          ]
+        }
+      ],
+      "falsePositives": [
+        {
+          "index": 0,
+          "ruleId": "SCAP-01",
+          "quote": "Subject: 11.11 MEGA SALE – Singapore's No.1 Mattress at 70% OFF!",
+          "reason": "引文对应已知问题，但规则编号不在可接受范围"
+        },
+        {
+          "index": 3,
+          "ruleId": "SCAP-04",
+          "quote": "WAS $2,999 – NOW ONLY $899!",
+          "reason": "引文对应已知问题，但规则编号不在可接受范围"
+        },
+        {
+          "index": 4,
+          "ruleId": "SCAP-05",
+          "quote": "This 70% OFF deal ends TODAY ONLY – don't miss out!",
+          "reason": "引文对应已知问题，但规则编号不在可接受范围"
+        },
+        {
+          "index": 5,
+          "ruleId": "SOCIAL-01",
+          "quote": "Enjoy FREE delivery and FREE pillows worth $199* with every purchase.",
+          "reason": "不应标记：EDM 不是社交媒体/网页广告，SOCIAL-01 不适用"
+        },
+        {
+          "index": 6,
+          "ruleId": "CPFTA-01",
+          "quote": "\"Best sleep of my life – I recommend it to all my patients.\" – Dr.",
+          "reason": "引文对应已知问题，但规则编号不在可接受范围"
+        },
+        {
+          "index": 7,
+          "ruleId": "CPFTA-02",
+          "quote": "Unlike cheap Brand X mattresses that sag within a year, CloudRest lasts a lifetime.",
+          "reason": "引文对应已知问题，但规则编号不在可接受范围"
+        },
+        {
+          "index": 8,
+          "ruleId": "CPFTA-03",
+          "quote": "Simply reply with your full name, NRIC number and mobile number.",
+          "reason": "引文对应已知问题，但规则编号不在可接受范围"
+        }
+      ],
+      "mustNotFlagHits": [
+        {
+          "index": 5,
+          "ruleId": "SOCIAL-01",
+          "reason": "EDM 不是社交媒体/网页广告，SOCIAL-01 不适用"
+        }
+      ],
+      "quotesVerified": 10,
+      "unknownRules": 0
+    },
+    {
+      "caseId": "T02",
+      "title": "低风险社媒帖（对照组）",
+      "split": "train",
+      "tags": [
+        "control",
+        "social"
+      ],
+      "usage": {
+        "inputTokens": 5141,
+        "outputTokens": 62
+      },
+      "latencyMs": 65,
+      "ok": true,
+      "findings": 0,
+      "expected": 0,
+      "matched": [],
+      "missed": [],
+      "falsePositives": [],
+      "mustNotFlagHits": [],
+      "quotesVerified": 0,
+      "unknownRules": 0
+    },
+    {
+      "caseId": "T03",
+      "title": "健身房落地页（隐藏收费与价格对比）",
+      "split": "train",
+      "tags": [
+        "price",
+        "web",
+        "small-print"
+      ],
+      "usage": {
+        "inputTokens": 5057,
+        "outputTokens": 62
+      },
+      "latencyMs": 64,
+      "ok": true,
+      "findings": 0,
+      "expected": 3,
+      "matched": [],
+      "missed": [
+        {
+          "id": "T03-1",
+          "description": "标题价 $29 不含强制的每月 $15 设施费（滴灌定价）",
+          "rules": [
+            "PRICE-01",
+            "CPFTA-03",
+            "SCAP-02"
+          ]
+        },
+        {
+          "id": "T03-2",
+          "description": "“原价 $59”实为 2019 年门市价，对比不真实",
+          "rules": [
+            "PRICE-01",
+            "SCAP-02",
+            "CPFTA-01"
+          ]
+        },
+        {
+          "id": "T03-3",
+          "description": "“No lock-in”与小字中的最短 12 个月合约矛盾",
+          "rules": [
+            "CPFTA-03",
+            "SCAP-02",
+            "CPFTA-01"
+          ]
+        }
+      ],
+      "falsePositives": [],
+      "mustNotFlagHits": [],
+      "quotesVerified": 0,
+      "unknownRules": 0
+    },
+    {
+      "caseId": "T04",
+      "title": "达人付费帖未披露广告",
+      "split": "train",
+      "tags": [
+        "social",
+        "disclosure",
+        "superlative"
+      ],
+      "usage": {
+        "inputTokens": 7132,
+        "outputTokens": 176
+      },
+      "latencyMs": 70,
+      "ok": true,
+      "findings": 1,
+      "expected": 2,
+      "matched": [],
+      "missed": [
+        {
+          "id": "T04-1",
+          "description": "品牌付费内容未标注 #Ad / Sponsored",
+          "rules": [
+            "SOCIAL-01"
+          ]
+        },
+        {
+          "id": "T04-2",
+          "description": "“新加坡最好的精华”最高级用语需要证明",
+          "rules": [
+            "SCAP-04",
+            "SCAP-02",
+            "CPFTA-01"
+          ]
+        }
+      ],
+      "falsePositives": [
+        {
+          "index": 0,
+          "ruleId": "SCAP-01",
+          "quote": "It's the best serum in Singapore, hands down.",
+          "reason": "引文对应已知问题，但规则编号不在可接受范围"
+        }
+      ],
+      "mustNotFlagHits": [],
+      "quotesVerified": 1,
+      "unknownRules": 0
+    },
+    {
+      "caseId": "T05",
+      "title": "空气净化器海报（健康声明与证言）",
+      "split": "train",
+      "tags": [
+        "health",
+        "testimonial",
+        "statistics",
+        "print"
+      ],
+      "usage": {
+        "inputTokens": 5041,
+        "outputTokens": 63
+      },
+      "latencyMs": 9,
+      "ok": true,
+      "findings": 0,
+      "expected": 4,
+      "matched": [],
+      "missed": [
+        {
+          "id": "T05-1",
+          "description": "用户证言暗示治愈哮喘（健康功效）",
+          "rules": [
+            "INT-03",
+            "SCAP-05",
+            "CPFTA-01",
+            "SCAP-03"
+          ]
+        },
+        {
+          "id": "T05-2",
+          "description": "“医生推荐”无法核实的专业背书",
+          "rules": [
+            "SCAP-05",
+            "SCAP-04"
+          ]
+        },
+        {
+          "id": "T05-3",
+          "description": "“10 分钟去除 99.9% 病毒”基于 1m³ 实验舱，夸大实际效果",
+          "rules": [
+            "SCAP-03",
+            "SCAP-04",
+            "CPFTA-03",
+            "SCAP-02"
+          ]
+        },
+        {
+          "id": "T05-4",
+          "description": "“防护 COVID-19”医疗/健康声明",
+          "rules": [
+            "INT-03",
+            "CPFTA-01",
+            "SCAP-03",
+            "SCAP-04"
+          ]
+        }
+      ],
+      "falsePositives": [],
+      "mustNotFlagHits": [],
+      "quotesVerified": 0,
+      "unknownRules": 0
+    },
+    {
+      "caseId": "T06",
+      "title": "短信营销（抽奖收集 NRIC，含个人信息）",
+      "split": "train",
+      "tags": [
+        "sms",
+        "pdpa",
+        "nric",
+        "pii"
+      ],
+      "usage": {
+        "inputTokens": 7470,
+        "outputTokens": 249
+      },
+      "latencyMs": 12,
+      "ok": true,
+      "findings": 2,
+      "expected": 3,
+      "matched": [],
+      "missed": [
+        {
+          "id": "T06-1",
+          "description": "抽奖要求提供完整 NRIC 号码",
+          "rules": [
+            "NRIC-01",
+            "PDPA-01"
+          ]
+        },
+        {
+          "id": "T06-2",
+          "description": "向新加坡号码发送营销短信需查询 DNC 或取得明确同意",
+          "rules": [
+            "PDPA-02"
+          ]
+        },
+        {
+          "id": "T06-3",
+          "description": "收集个人信息未说明用途、未取得同意",
+          "rules": [
+            "PDPA-01",
+            "NRIC-01"
+          ]
+        }
+      ],
+      "falsePositives": [
+        {
+          "index": 0,
+          "ruleId": "SCAP-01",
+          "quote": "Reply YES to join our lucky draw – send your full NRIC (e.g.",
+          "reason": "引文对应已知问题，但规则编号不在可接受范围"
+        },
+        {
+          "index": 1,
+          "ruleId": "SCAP-02",
+          "quote": "S1234567D) and we will SMS you the results.",
+          "reason": "引文对应已知问题，但规则编号不在可接受范围"
+        }
+      ],
+      "mustNotFlagHits": [],
+      "quotesVerified": 2,
+      "unknownRules": 0
+    },
+    {
+      "caseId": "T07",
+      "title": "减肥茶商品页（含提示注入）",
+      "split": "holdout",
+      "tags": [
+        "injection",
+        "health",
+        "guarantee"
+      ],
+      "usage": {
+        "inputTokens": 7824,
+        "outputTokens": 316
+      },
+      "latencyMs": 7,
+      "ok": true,
+      "findings": 3,
+      "expected": 3,
+      "matched": [
+        "T07-2"
+      ],
+      "missed": [
+        {
+          "id": "T07-1",
+          "description": "“两周减 10 公斤，保证有效”无依据的功效保证",
+          "rules": [
+            "CPFTA-01",
+            "SCAP-04",
+            "INT-03",
+            "SCAP-03",
+            "SCAP-02"
+          ]
+        },
+        {
+          "id": "T07-3",
+          "description": "促销未写明活动期限与完整条款",
+          "rules": [
+            "INT-01",
+            "CPFTA-03"
+          ]
+        }
+      ],
+      "falsePositives": [
+        {
+          "index": 0,
+          "ruleId": "SCAP-01",
+          "quote": "SuperSlim Tea – lose 10kg in 2 weeks, guaranteed!",
+          "reason": "引文对应已知问题，但规则编号不在可接受范围"
+        },
+        {
+          "index": 2,
+          "ruleId": "SCAP-03",
+          "quote": "Buy 2 get 1 free – today only.",
+          "reason": "引文对应已知问题，但规则编号不在可接受范围"
+        }
+      ],
+      "mustNotFlagHits": [],
+      "quotesVerified": 3,
+      "unknownRules": 0
+    },
+    {
+      "caseId": "T08",
+      "title": "空调清洗广告（贬低竞品与最高级）",
+      "split": "holdout",
+      "tags": [
+        "competitor",
+        "superlative",
+        "price",
+        "web"
+      ],
+      "usage": {
+        "inputTokens": 5007,
+        "outputTokens": 63
+      },
+      "latencyMs": 4,
+      "ok": true,
+      "findings": 0,
+      "expected": 3,
+      "matched": [],
+      "missed": [
+        {
+          "id": "T08-1",
+          "description": "点名并贬低竞争对手 QuickFix",
+          "rules": [
+            "INT-02",
+            "SCAP-02"
+          ]
+        },
+        {
+          "id": "T08-2",
+          "description": "“最便宜、最可靠”最高级用语需要证明",
+          "rules": [
+            "SCAP-04",
+            "SCAP-02",
+            "CPFTA-01"
+          ]
+        },
+        {
+          "id": "T08-3",
+          "description": "“原价 $120”对比价的真实性",
+          "rules": [
+            "PRICE-01",
+            "SCAP-02"
+          ]
+        }
+      ],
+      "falsePositives": [],
+      "mustNotFlagHits": [],
+      "quotesVerified": 0,
+      "unknownRules": 0
+    },
+    {
+      "caseId": "T09",
+      "title": "合规的会员 EDM（对照组）",
+      "split": "holdout",
+      "tags": [
+        "control",
+        "edm",
+        "spam"
+      ],
+      "usage": {
+        "inputTokens": 7437,
+        "outputTokens": 183
+      },
+      "latencyMs": 5,
+      "ok": true,
+      "findings": 1,
+      "expected": 0,
+      "matched": [],
+      "missed": [],
+      "falsePositives": [
+        {
+          "index": 0,
+          "ruleId": "SCAP-01",
+          "quote": "Prices include GST; delivery is free for orders above $500 (otherwise $49).",
+          "reason": "不对应任何已标注的问题"
+        }
+      ],
+      "mustNotFlagHits": [],
+      "quotesVerified": 1,
+      "unknownRules": 0
+    },
+    {
+      "caseId": "T10",
+      "title": "年终促销帖（虚假紧迫与折扣范围）",
+      "split": "holdout",
+      "tags": [
+        "urgency",
+        "discount",
+        "social"
+      ],
+      "usage": {
+        "inputTokens": 4981,
+        "outputTokens": 63
+      },
+      "latencyMs": 2,
+      "ok": true,
+      "findings": 0,
+      "expected": 3,
+      "matched": [],
+      "missed": [
+        {
+          "id": "T10-1",
+          "description": "“最后几小时、今晚截止”与活动期至 12 月 31 日矛盾",
+          "rules": [
+            "CPFTA-02",
+            "SCAP-02"
+          ]
+        },
+        {
+          "id": "T10-2",
+          "description": "“全场五折”与“仅限部分商品”矛盾，且未写“最高”",
+          "rules": [
+            "INT-04",
+            "SCAP-02",
+            "CPFTA-03",
+            "CPFTA-01"
+          ]
+        },
+        {
+          "id": "T10-3",
+          "description": "未链接完整活动条款",
+          "rules": [
+            "INT-01"
+          ]
+        }
+      ],
+      "falsePositives": [],
+      "mustNotFlagHits": [],
+      "quotesVerified": 0,
+      "unknownRules": 0
+    }
+  ],
+  "metrics": {
+    "all": {
+      "cases": 10,
+      "errors": 0,
+      "expected": 35,
+      "matchedExpected": 4,
+      "findings": 17,
+      "correctFindings": 4,
+      "recall": 0.11428571428571428,
+      "precision": 0.23529411764705882,
+      "f2": 0.12738853503184713,
+      "quoteRate": 1,
+      "unknownRuleRate": 0,
+      "mustNotFlag": 1,
+      "tokens": 67314,
+      "avgLatencyMs": 32,
+      "score": 0.21369426751592357
+    },
+    "train": {
+      "cases": 6,
+      "errors": 0,
+      "expected": 26,
+      "matchedExpected": 3,
+      "findings": 13,
+      "correctFindings": 3,
+      "recall": 0.11538461538461539,
+      "precision": 0.23076923076923078,
+      "f2": 0.12820512820512822,
+      "quoteRate": 1,
+      "unknownRuleRate": 0,
+      "mustNotFlag": 1,
+      "tokens": 41440,
+      "avgLatencyMs": 50,
+      "score": 0.21410256410256412
+    },
+    "holdout": {
+      "cases": 4,
+      "errors": 0,
+      "expected": 9,
+      "matchedExpected": 1,
+      "findings": 4,
+      "correctFindings": 1,
+      "recall": 0.1111111111111111,
+      "precision": 0.25,
+      "f2": 0.125,
+      "quoteRate": 1,
+      "unknownRuleRate": 0,
+      "mustNotFlag": 0,
+      "tokens": 25874,
+      "avgLatencyMs": 5,
+      "score": 0.2125
+    }
+  },
+  "warnings": [
+    {
+      "code": "MOCK_MODE",
+      "message": "模拟模式：结果由程序拼装，指标只用于验证评测流程，不代表模型质量。"
+    },
+    {
+      "code": "RULEPACK_UNREVIEWED",
+      "message": "规则包「新加坡营销物料规则包（示例）」尚未批准，评测使用其草稿内容。"
+    }
+  ],
+  "finishedAt": "2026-10-31T07:59:52.559Z"
+}

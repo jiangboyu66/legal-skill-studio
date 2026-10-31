@@ -1,0 +1,19 @@
+{
+  "name": "sg-marketing-compliance",
+  "version": "2.0.0",
+  "description": "新加坡营销物料合规初审：声明提取、规则检查（含结论核验）、高风险深度审查、补充材料请求、审阅意见；附示例规则包与工作流模板。",
+  "skills": [
+    "skills/claim-extract",
+    "skills/rule-check",
+    "skills/legal-deep-review",
+    "skills/substantiation-request",
+    "skills/review-memo"
+  ],
+  "rulePacks": [
+    "rulepacks/sg-marketing.json"
+  ],
+  "workflows": [
+    "workflows/sg-marketing-review.json"
+  ],
+  "agents": []
+}

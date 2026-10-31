@@ -1,0 +1,17 @@
+{
+  "inputs": [
+    {
+      "key": "findings",
+      "label": "问题清单（JSON）",
+      "type": "long_text",
+      "required": true
+    }
+  ],
+  "output": {
+    "format": "markdown",
+    "fields": []
+  },
+  "checks": [],
+  "tools": [],
+  "rulePacks": []
+}

@@ -1,0 +1,95 @@
+{
+  "inputs": [
+    {
+      "key": "findings",
+      "label": "问题清单（JSON）",
+      "type": "long_text",
+      "required": true
+    },
+    {
+      "key": "material",
+      "label": "营销物料",
+      "type": "document",
+      "required": true,
+      "description": "上传文件或粘贴文字"
+    }
+  ],
+  "rulePacks": [
+    "sg-marketing"
+  ],
+  "output": {
+    "format": "json",
+    "fields": [
+      {
+        "key": "summary",
+        "label": "结论摘要",
+        "type": "string",
+        "required": true
+      },
+      {
+        "key": "escalations",
+        "label": "升级事项",
+        "type": "object_list",
+        "required": true,
+        "fields": [
+          {
+            "key": "rule_id",
+            "label": "规则编号",
+            "type": "string",
+            "required": true
+          },
+          {
+            "key": "quote",
+            "label": "原文引文",
+            "type": "string",
+            "required": true
+          },
+          {
+            "key": "why_high_risk",
+            "label": "高风险原因",
+            "type": "string",
+            "required": true
+          },
+          {
+            "key": "evidence_needed",
+            "label": "所需证据",
+            "type": "string",
+            "required": true
+          },
+          {
+            "key": "recommended_action",
+            "label": "建议处理",
+            "type": "string",
+            "required": true
+          }
+        ]
+      },
+      {
+        "key": "needs_external_counsel",
+        "label": "需要外部律师意见",
+        "type": "boolean",
+        "required": true
+      }
+    ]
+  },
+  "checks": [
+    {
+      "id": "chk_esc_quote",
+      "label": "引文核对",
+      "path": "escalations[].quote",
+      "source": "input:material"
+    },
+    {
+      "id": "chk_esc_rule",
+      "label": "规则编号核对",
+      "path": "escalations[].rule_id",
+      "source": "knowledge"
+    }
+  ],
+  "tools": [
+    "read_document",
+    "search_document",
+    "lookup_rule",
+    "verify_quote"
+  ]
+}

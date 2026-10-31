@@ -1,0 +1,186 @@
+{
+  "key": "sg-marketing-review",
+  "name": "新加坡营销物料合规初审",
+  "description": "提取声明 → 对照规则包检查（含结论核验）→ 高风险时深度审查 ∥ 起草补充材料请求 → 法务负责人审批 → 生成审阅意见。可复制后按本公司规则修改。",
+  "def": {
+    "inputs": [
+      {
+        "key": "material",
+        "label": "营销物料",
+        "type": "document",
+        "required": true,
+        "description": "上传 PDF / Word / 图片，或直接粘贴文字"
+      },
+      {
+        "key": "channel",
+        "label": "投放渠道",
+        "type": "text",
+        "required": false,
+        "description": "如 EDM、Instagram、短信、海报"
+      },
+      {
+        "key": "jurisdiction",
+        "label": "适用法域",
+        "type": "text",
+        "required": false,
+        "description": "如 新加坡 / SG。留空则按规则包法域推定，结果会标注“假设”"
+      },
+      {
+        "key": "report_language",
+        "label": "报告语言",
+        "type": "text",
+        "required": false,
+        "defaultValue": "简体中文"
+      }
+    ],
+    "nodes": [
+      {
+        "id": "extract",
+        "type": "skill",
+        "name": "提取宣传声明",
+        "skill": "claim-extract",
+        "needs": [],
+        "mappings": {
+          "material": {
+            "type": "workflow_input",
+            "key": "material"
+          },
+          "channel": {
+            "type": "workflow_input",
+            "key": "channel"
+          }
+        }
+      },
+      {
+        "id": "check",
+        "type": "skill",
+        "name": "对照规则检查",
+        "skill": "rule-check",
+        "needs": [
+          "extract"
+        ],
+        "mappings": {
+          "claims": {
+            "type": "node_output",
+            "nodeId": "extract",
+            "path": "claims"
+          },
+          "material": {
+            "type": "workflow_input",
+            "key": "material"
+          },
+          "channel": {
+            "type": "workflow_input",
+            "key": "channel"
+          }
+        }
+      },
+      {
+        "id": "deep_review",
+        "type": "skill",
+        "name": "高风险深度审查",
+        "skill": "legal-deep-review",
+        "needs": [
+          "check"
+        ],
+        "when": "nodes.check.output.overall_risk == \"high\"",
+        "mappings": {
+          "findings": {
+            "type": "node_output",
+            "nodeId": "check",
+            "path": "findings"
+          },
+          "material": {
+            "type": "workflow_input",
+            "key": "material"
+          }
+        }
+      },
+      {
+        "id": "evidence_request",
+        "type": "skill",
+        "name": "起草补充材料请求",
+        "skill": "substantiation-request",
+        "needs": [
+          "check"
+        ],
+        "when": "len(nodes.check.output.findings) > 0",
+        "mappings": {
+          "findings": {
+            "type": "node_output",
+            "nodeId": "check",
+            "path": "findings"
+          }
+        }
+      },
+      {
+        "id": "legal_approval",
+        "type": "approval",
+        "name": "法务负责人审批",
+        "needs": [
+          "check",
+          "deep_review"
+        ],
+        "when": "nodes.check.output.overall_risk != \"low\"",
+        "instructions": "请核对问题清单、AI 结论核验结果与深度审查意见，决定是否同意据此向市场部出具审阅意见。驳回将终止本次流程。",
+        "showNodeIds": [
+          "check",
+          "deep_review"
+        ],
+        "approverRole": "reviewer",
+        "onReject": "stop"
+      },
+      {
+        "id": "memo",
+        "type": "skill",
+        "name": "生成审阅意见",
+        "skill": "review-memo",
+        "needs": [
+          "legal_approval",
+          "evidence_request"
+        ],
+        "mappings": {
+          "findings": {
+            "type": "node_output",
+            "nodeId": "check"
+          },
+          "deep_review": {
+            "type": "coalesce",
+            "options": [
+              {
+                "type": "node_output",
+                "nodeId": "deep_review"
+              },
+              {
+                "type": "literal",
+                "value": "（本次未触发高风险深度审查）"
+              }
+            ]
+          },
+          "approval": {
+            "type": "coalesce",
+            "options": [
+              {
+                "type": "node_output",
+                "nodeId": "legal_approval"
+              },
+              {
+                "type": "literal",
+                "value": "（低风险，未经过人工审批节点）"
+              }
+            ]
+          },
+          "material": {
+            "type": "workflow_input",
+            "key": "material"
+          },
+          "output_language": {
+            "type": "workflow_input",
+            "key": "report_language"
+          }
+        }
+      }
+    ],
+    "outputNodeId": "memo"
+  }
+}

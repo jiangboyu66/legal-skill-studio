@@ -1,0 +1,135 @@
+{
+  "inputs": [
+    {
+      "key": "claims",
+      "label": "待检查的宣传声明（通常来自上一步；可留空）",
+      "type": "long_text",
+      "required": false,
+      "description": "留空时由本 Skill 自行从物料中识别声明"
+    },
+    {
+      "key": "material",
+      "label": "营销物料",
+      "type": "document",
+      "required": true,
+      "description": "上传文件或粘贴文字"
+    },
+    {
+      "key": "channel",
+      "label": "投放渠道",
+      "type": "text",
+      "required": false,
+      "description": "如 EDM、Instagram、短信、海报"
+    }
+  ],
+  "rulePacks": [
+    "sg-marketing"
+  ],
+  "output": {
+    "format": "json",
+    "fields": [
+      {
+        "key": "findings",
+        "label": "问题清单",
+        "type": "object_list",
+        "required": true,
+        "fields": [
+          {
+            "key": "rule_id",
+            "label": "规则编号",
+            "type": "string",
+            "required": true
+          },
+          {
+            "key": "quote",
+            "label": "原文引文",
+            "type": "string",
+            "required": true
+          },
+          {
+            "key": "issue",
+            "label": "问题说明",
+            "type": "string",
+            "required": true
+          },
+          {
+            "key": "risk_level",
+            "label": "风险等级",
+            "type": "enum",
+            "required": true,
+            "options": [
+              "high",
+              "medium",
+              "low"
+            ]
+          },
+          {
+            "key": "suggested_fix",
+            "label": "修改建议",
+            "type": "string",
+            "required": true
+          },
+          {
+            "key": "needs_human_review",
+            "label": "需人工复核",
+            "type": "boolean",
+            "required": true
+          },
+          {
+            "key": "reason",
+            "label": "复核原因",
+            "type": "string",
+            "required": false
+          }
+        ]
+      },
+      {
+        "key": "overall_risk",
+        "label": "总体风险",
+        "type": "enum",
+        "required": true,
+        "options": [
+          "high",
+          "medium",
+          "low"
+        ]
+      },
+      {
+        "key": "coverage_note",
+        "label": "检查范围与局限",
+        "type": "string",
+        "required": false
+      }
+    ]
+  },
+  "checks": [
+    {
+      "id": "chk_finding_quote",
+      "label": "问题引文核对",
+      "path": "findings[].quote",
+      "source": "input:material"
+    },
+    {
+      "id": "chk_rule_id",
+      "label": "规则编号核对",
+      "path": "findings[].rule_id",
+      "source": "knowledge"
+    }
+  ],
+  "verification": {
+    "enabled": true,
+    "listPath": "findings",
+    "ruleIdField": "rule_id",
+    "quoteField": "quote",
+    "conclusionField": "issue",
+    "severityField": "risk_level",
+    "channelInput": "channel",
+    "useAgent": true
+  },
+  "tools": [
+    "read_document",
+    "search_document",
+    "lookup_rule",
+    "verify_quote"
+  ]
+}

@@ -1,0 +1,100 @@
+{
+  "inputs": [
+    {
+      "key": "material",
+      "label": "营销物料",
+      "type": "document",
+      "required": true,
+      "description": "上传文件或粘贴文字"
+    },
+    {
+      "key": "channel",
+      "label": "投放渠道",
+      "type": "text",
+      "required": false,
+      "description": "如 EDM、Instagram、短信、海报"
+    }
+  ],
+  "output": {
+    "format": "json",
+    "fields": [
+      {
+        "key": "summary",
+        "label": "物料概述",
+        "type": "string",
+        "required": true
+      },
+      {
+        "key": "channel",
+        "label": "识别出的投放渠道",
+        "type": "string",
+        "required": false
+      },
+      {
+        "key": "claims",
+        "label": "宣传声明",
+        "type": "object_list",
+        "required": true,
+        "fields": [
+          {
+            "key": "quote",
+            "label": "原文引文（逐字）",
+            "type": "string",
+            "required": true
+          },
+          {
+            "key": "claim_type",
+            "label": "声明类型",
+            "type": "enum",
+            "required": true,
+            "options": [
+              "superlative",
+              "efficacy_or_health",
+              "price_or_discount",
+              "free_offer",
+              "time_or_quantity_limit",
+              "comparative",
+              "testimonial_or_endorsement",
+              "personal_data_collection",
+              "marketing_message",
+              "environmental",
+              "other"
+            ]
+          },
+          {
+            "key": "substantiation_needed",
+            "label": "需要的证明材料",
+            "type": "string",
+            "required": true
+          }
+        ]
+      },
+      {
+        "key": "disclosures_present",
+        "label": "已有披露",
+        "type": "string_list",
+        "required": false
+      },
+      {
+        "key": "disclosures_missing",
+        "label": "可能缺失的披露",
+        "type": "string_list",
+        "required": false
+      }
+    ]
+  },
+  "checks": [
+    {
+      "id": "chk_claim_quote",
+      "label": "声明引文核对",
+      "path": "claims[].quote",
+      "source": "input:material"
+    }
+  ],
+  "tools": [
+    "read_document",
+    "search_document",
+    "verify_quote"
+  ],
+  "rulePacks": []
+}

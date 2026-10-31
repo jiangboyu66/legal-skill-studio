@@ -1,0 +1,15 @@
+# gitleaks configuration: default rules + project allowlist.
+title = "legal-skill-studio"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Fictional test fixtures and example placeholders"
+paths = [
+  '''node_modules/''',
+  '''package-lock\.json''',
+]
+regexes = [
+  '''sk-ant-\.\.\.''',
+]

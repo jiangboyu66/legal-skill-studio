@@ -1,0 +1,46 @@
+{
+  "inputs": [
+    {
+      "key": "findings",
+      "label": "合规检查结果（JSON）",
+      "type": "long_text",
+      "required": true
+    },
+    {
+      "key": "deep_review",
+      "label": "深度审查（JSON，可选）",
+      "type": "long_text",
+      "required": false
+    },
+    {
+      "key": "approval",
+      "label": "审批意见（可选）",
+      "type": "long_text",
+      "required": false
+    },
+    {
+      "key": "material",
+      "label": "营销物料",
+      "type": "document",
+      "required": true,
+      "description": "上传文件或粘贴文字"
+    },
+    {
+      "key": "output_language",
+      "label": "报告语言",
+      "type": "text",
+      "required": false,
+      "defaultValue": "简体中文"
+    }
+  ],
+  "output": {
+    "format": "markdown",
+    "fields": []
+  },
+  "checks": [],
+  "tools": [
+    "read_document",
+    "search_document"
+  ],
+  "rulePacks": []
+}
